@@ -200,8 +200,11 @@ uint32_t do_arm_semihosting(CPUState *env)
         if (strcmp(s, ":tt") == 0) {
             if (ARG(1) < 4)
                 return STDIN_FILENO;
-            else
+            else if (ARG(1) == 4)
                 return STDOUT_FILENO;
+            else
+                return STDERR_FILENO; /* newlib/libgloss uses mode "a"
+                                       * (#8) to represent stderr.  */
         }
         if (use_gdb_syscalls()) {
             gdb_do_syscall(arm_semi_cb, "open,%s,%x,1a4", ARG(0),
