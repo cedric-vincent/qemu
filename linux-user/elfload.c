@@ -834,7 +834,7 @@ struct exec
 #define TARGET_ELF_PAGESTART(_v) ((_v) & ~(unsigned long)(TARGET_ELF_EXEC_PAGESIZE-1))
 #define TARGET_ELF_PAGEOFFSET(_v) ((_v) & (TARGET_ELF_EXEC_PAGESIZE-1))
 
-#define DLINFO_ITEMS 12
+#define DLINFO_ITEMS 13
 
 static inline void memcpy_fromfs(void * to, const void * from, unsigned long n)
 {
@@ -1136,6 +1136,13 @@ static abi_ulong create_elf_tables(abi_ulong p, int argc, int envc,
     NEW_AUX_ENT(AT_EGID, (abi_ulong) getegid());
     NEW_AUX_ENT(AT_HWCAP, (abi_ulong) ELF_HWCAP);
     NEW_AUX_ENT(AT_CLKTCK, (abi_ulong) sysconf(_SC_CLK_TCK));
+
+    /* The dynamic linker of the GNU C library v2.10+ uses the ELF
+     * auxialiary vector AT_RANDOM as a pointer to a 16-bit random
+     * value.  Note the start of the text segment is not random at
+     * all, however it is definitively readeable. */
+    NEW_AUX_ENT(AT_RANDOM, (abi_ulong) info->start_code);
+
     if (k_platform)
         NEW_AUX_ENT(AT_PLATFORM, u_platform);
 #ifdef ARCH_DLINFO
