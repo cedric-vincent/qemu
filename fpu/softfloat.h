@@ -77,6 +77,12 @@ typedef int64_t sbits64;
 #define LIT64( a ) a##LL
 #define INLINE static inline
 
+#if defined(TARGET_MIPS) || defined(TARGET_SH4)
+#define SNAN_BIT_IS_ONE		1
+#else
+#define SNAN_BIT_IS_ONE		0
+#endif
+
 /*----------------------------------------------------------------------------
 | The macro `FLOATX80' must be defined to enable the extended double-precision
 | floating-point format `floatx80'.  If this macro is not defined, the
@@ -257,6 +263,17 @@ bits16 float32_to_float16( float32, flag STATUS_PARAM );
 float32 float16_to_float32( bits16, flag STATUS_PARAM );
 
 /*----------------------------------------------------------------------------
+| The pattern for a default generated half-precision NaN.
+*----------------------------------------------------------------------------*/
+#if defined(TARGET_ARM)
+#define float16_default_nan make_float16(0x7E00)
+#elif SNAN_BIT_IS_ONE
+#define float16_default_nan make_float16(0x7DFF)
+#else
+#define float16_default_nan make_float16(0xFE00)
+#endif
+
+/*----------------------------------------------------------------------------
 | Software IEC/IEEE single-precision conversion routines.
 *----------------------------------------------------------------------------*/
 int float32_to_int16_round_to_zero( float32 STATUS_PARAM );
@@ -345,6 +362,20 @@ INLINE int float32_is_zero_or_denormal(float32 a)
 #define float32_one make_float32(0x3f800000)
 #define float32_ln2 make_float32(0x3f317218)
 
+
+/*----------------------------------------------------------------------------
+| The pattern for a default generated single-precision NaN.
+*----------------------------------------------------------------------------*/
+#if defined(TARGET_SPARC)
+#define float32_default_nan make_float32(0x7FFFFFFF)
+#elif defined(TARGET_PPC) || defined(TARGET_ARM) || defined(TARGET_ALPHA)
+#define float32_default_nan make_float32(0x7FC00000)
+#elif SNAN_BIT_IS_ONE
+#define float32_default_nan make_float32(0x7FBFFFFF)
+#else
+#define float32_default_nan make_float32(0xFFC00000)
+#endif
+
 /*----------------------------------------------------------------------------
 | Software IEC/IEEE double-precision conversion routines.
 *----------------------------------------------------------------------------*/
@@ -431,6 +462,19 @@ INLINE int float64_is_any_nan(float64 a)
 #define float64_one make_float64(0x3ff0000000000000LL)
 #define float64_ln2 make_float64(0x3fe62e42fefa39efLL)
 
+/*----------------------------------------------------------------------------
+| The pattern for a default generated double-precision NaN.
+*----------------------------------------------------------------------------*/
+#if defined(TARGET_SPARC)
+#define float64_default_nan make_float64(LIT64( 0x7FFFFFFFFFFFFFFF ))
+#elif defined(TARGET_PPC) || defined(TARGET_ARM) || defined(TARGET_ALPHA)
+#define float64_default_nan make_float64(LIT64( 0x7FF8000000000000 ))
+#elif SNAN_BIT_IS_ONE
+#define float64_default_nan make_float64(LIT64( 0x7FF7FFFFFFFFFFFF ))
+#else
+#define float64_default_nan make_float64(LIT64( 0xFFF8000000000000 ))
+#endif
+
 #ifdef FLOATX80
 
 /*----------------------------------------------------------------------------
@@ -498,6 +542,19 @@ INLINE int floatx80_is_any_nan(floatx80 a)
 {
     return ((a.high & 0x7fff) == 0x7fff) && (a.low<<1);
 }
+
+/*----------------------------------------------------------------------------
+| The pattern for a default generated extended double-precision NaN.  The
+| `high' and `low' values hold the most- and least-significant bits,
+| respectively.
+*----------------------------------------------------------------------------*/
+#if SNAN_BIT_IS_ONE
+#define floatx80_default_nan_high 0x7FFF
+#define floatx80_default_nan_low  LIT64( 0xBFFFFFFFFFFFFFFF )
+#else
+#define floatx80_default_nan_high 0xFFFF
+#define floatx80_default_nan_low  LIT64( 0xC000000000000000 )
+#endif
 
 #endif
 
@@ -571,6 +628,18 @@ INLINE int float128_is_any_nan(float128 a)
     return ((a.high >> 48) & 0x7fff) == 0x7fff &&
         ((a.low != 0) || ((a.high & 0xffffffffffffLL) != 0));
 }
+
+/*----------------------------------------------------------------------------
+| The pattern for a default generated quadruple-precision NaN.  The `high' and
+| `low' values hold the most- and least-significant bits, respectively.
+*----------------------------------------------------------------------------*/
+#if SNAN_BIT_IS_ONE
+#define float128_default_nan_high LIT64( 0x7FFF7FFFFFFFFFFF )
+#define float128_default_nan_low  LIT64( 0xFFFFFFFFFFFFFFFF )
+#else
+#define float128_default_nan_high LIT64( 0xFFFF800000000000 )
+#define float128_default_nan_low  LIT64( 0x0000000000000000 )
+#endif
 
 #endif
 
