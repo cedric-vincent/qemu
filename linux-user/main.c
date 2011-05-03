@@ -35,7 +35,8 @@
 #include "qemu-timer.h"
 #include "envlist.h"
 
-#define DEBUG_LOGFILE "/tmp/qemu.log"
+#define DEFAULT_DEBUG_LOGFILE "/tmp/qemu.log"
+static const char *debug_logfile = DEFAULT_DEBUG_LOGFILE;
 
 char *exec_path;
 
@@ -2646,7 +2647,8 @@ static void usage(void)
 #endif
            "\n"
            "Debug options:\n"
-           "-d options   activate log (logfile=%s)\n"
+           "-d options   activate log\n"
+           "-logfile fn  set log filename to 'fn' (default=%s)\n"
            "-p pagesize  set the host page size to 'pagesize'\n"
            "-singlestep  always run in singlestep mode\n"
            "-strace      log system calls\n"
@@ -2664,7 +2666,7 @@ static void usage(void)
            TARGET_ARCH,
            interp_prefix,
            guest_stack_size,
-           DEBUG_LOGFILE);
+           debug_logfile);
     exit(1);
 }
 
@@ -2723,14 +2725,12 @@ int main(int argc, char **argv, char **envp)
     const char *argv0 = NULL;
     int i;
     int ret;
+    int log_mask = 0;
 
     if (argc <= 1)
         usage();
 
     qemu_cache_utils_init(envp);
-
-    /* init debug */
-    cpu_set_log_filename(DEBUG_LOGFILE);
 
     if ((envlist = envlist_create()) == NULL) {
         (void) fprintf(stderr, "Unable to allocate envlist\n");
@@ -2769,23 +2769,23 @@ int main(int argc, char **argv, char **envp)
         r++;
         if (!strcmp(r, "-")) {
             break;
+        } else if (!strcmp(r, "logfile")) {
+            debug_logfile = argv[optind++];
         } else if (!strcmp(r, "d")) {
-            int mask;
             const CPULogItem *item;
 
 	    if (optind >= argc)
 		break;
 
 	    r = argv[optind++];
-            mask = cpu_str_to_log_mask(r);
-            if (!mask) {
+            log_mask = cpu_str_to_log_mask(r);
+            if (!log_mask) {
                 printf("Log items (comma separated):\n");
                 for(item = cpu_log_items; item->mask != 0; item++) {
                     printf("%-10s %s\n", item->name, item->help);
                 }
                 exit(1);
             }
-            cpu_set_log(mask);
         } else if (!strcmp(r, "E")) {
             r = argv[optind++];
             if (envlist_setenv(envlist, r) != 0)
@@ -2895,6 +2895,12 @@ int main(int argc, char **argv, char **envp)
         usage();
     filename = argv[optind];
     exec_path = argv[optind];
+
+    /* init debug */
+    if (log_mask) {
+        cpu_set_log_filename(debug_logfile);
+        cpu_set_log(log_mask);
+    }
 
     /* Zero out regs */
     memset(regs, 0, sizeof(struct target_pt_regs));

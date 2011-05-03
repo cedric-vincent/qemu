@@ -1953,12 +1953,21 @@ Shorthand for -gdb tcp::1234, i.e. open a gdbserver on TCP port 1234
 ETEXI
 
 DEF("d", HAS_ARG, QEMU_OPTION_d, \
-    "-d item1,...    output log to /tmp/qemu.log (use -d ? for a list of log items)\n",
+    "-d item1,...    output log (use -d ? for a list of log items)\n",
     QEMU_ARCH_ALL)
 STEXI
 @item -d
 @findex -d
-Output log in /tmp/qemu.log
+Output log
+ETEXI
+
+DEF("logfile", HAS_ARG, QEMU_OPTION_logfile, \
+    "-logfile fn     set log filename to 'fn' (default=/tmp/qemu.log)\n",
+    QEMU_ARCH_ALL)
+STEXI
+@item -logfile
+@findex -logfile
+Set log filename to 'fn' (default=/tmp/qemu.log)
 ETEXI
 
 DEF("hdachs", HAS_ARG, QEMU_OPTION_hdachs, \
