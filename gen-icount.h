@@ -2,12 +2,36 @@
 
 /* Helpers for instruction counting code generation.  */
 
+static TCGArg *count_ifetch_arg;
 static TCGArg *icount_arg;
 static int icount_label;
+
+static inline void gen_count_ifetch_start(void)
+{
+    TCGv_i64 count, ninst64;
+    TCGv_i32 ninst;
+
+    count = tcg_temp_new_i64();
+    tcg_gen_ld_i64(count, cpu_env, offsetof(CPUState, ifetch_counter));
+    /* This is a horrid hack to allow fixing up the value later.  */
+    count_ifetch_arg = gen_opparam_ptr + 1;
+    ninst = tcg_const_i32(0xdeadbeef);
+    ninst64 = tcg_temp_new_i64();
+    tcg_gen_extu_i32_i64(ninst64, ninst);
+    tcg_temp_free_i32(ninst);
+    tcg_gen_add_i64(count, count, ninst64);
+    tcg_temp_free_i64(ninst64);
+    tcg_gen_st_i64(count, cpu_env, offsetof(CPUState, ifetch_counter));
+    tcg_temp_free_i64(count);
+}
 
 static inline void gen_icount_start(void)
 {
     TCGv_i32 count;
+
+    if (count_ifetch) {
+        gen_count_ifetch_start();
+    }
 
     if (!use_icount)
         return;
@@ -26,6 +50,10 @@ static inline void gen_icount_start(void)
 
 static void gen_icount_end(TranslationBlock *tb, int num_insns)
 {
+    if (count_ifetch) {
+        *count_ifetch_arg = num_insns;
+    }
+
     if (use_icount) {
         *icount_arg = num_insns;
         gen_set_label(icount_label);

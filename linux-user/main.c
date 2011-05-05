@@ -2637,6 +2637,7 @@ static void usage(void)
            "-L path           set the elf interpreter prefix (default=%s)\n"
            "-s size           set the stack size in bytes (default=%ld)\n"
            "-cpu model        select CPU (-cpu ? for list)\n"
+           "-count-ifetch     count the number of fetched instructions\n"
            "-drop-ld-preload  drop LD_PRELOAD for target process\n"
            "-E var=value      sets/modifies targets environment variable(s)\n"
            "-U var            unsets targets environment variable(s)\n"
@@ -2842,6 +2843,8 @@ int main(int argc, char **argv, char **envp)
 #endif
                 exit(1);
             }
+        } else if (!strcmp(r, "count-ifetch")) {
+            count_ifetch = 1;
 #if defined(CONFIG_USE_GUEST_BASE)
         } else if (!strcmp(r, "B")) {
            guest_base = strtol(argv[optind++], NULL, 0);

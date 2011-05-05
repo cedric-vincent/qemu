@@ -2379,6 +2379,8 @@ void gdb_exit(CPUState *env, int code)
   GDBState *s;
   char buf[4];
 
+  show_all_ifetch_counters();
+
   s = gdbserver_state;
   if (!s) {
       return;
@@ -2467,6 +2469,8 @@ void gdb_signalled(CPUState *env, int sig)
 {
   GDBState *s;
   char buf[4];
+
+  show_all_ifetch_counters();
 
   s = gdbserver_state;
   if (gdbserver_fd < 0 || s->fd < 0)

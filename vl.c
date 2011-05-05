@@ -2666,6 +2666,9 @@ int main(int argc, char **argv, char **envp)
                 if (tb_size < 0)
                     tb_size = 0;
                 break;
+            case QEMU_OPTION_count_ifetch:
+                count_ifetch = 1;
+                break;
             case QEMU_OPTION_icount:
                 icount_option = optarg;
                 break;

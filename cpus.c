@@ -289,6 +289,7 @@ void resume_all_vcpus(void)
 
 void pause_all_vcpus(void)
 {
+    show_all_ifetch_counters();
 }
 
 void qemu_cpu_kick(void *env)
@@ -782,6 +783,8 @@ void pause_all_vcpus(void)
             penv = (CPUState *)penv->next_cpu;
         }
     }
+
+    show_all_ifetch_counters();
 }
 
 void resume_all_vcpus(void)
