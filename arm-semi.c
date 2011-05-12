@@ -348,7 +348,13 @@ uint32_t do_arm_semihosting(CPUState *env)
             return ret;
         }
     case SYS_CLOCK:
-        return clock() / (CLOCKS_PER_SEC / 100);
+        /* Number of centiseconds since execution started.  */
+        if (clock_ifetch) {
+            assert(count_ifetch);
+            return env->ifetch_counter / (clock_ifetch / 100);
+        } else {
+            return clock() / (CLOCKS_PER_SEC / 100);
+        }
     case SYS_TIME:
         return set_swi_errno(ts, time(NULL));
     case SYS_SYSTEM:

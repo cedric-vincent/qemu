@@ -2160,6 +2160,47 @@ This option is useful to evaluate some compiler optimizations and is
 not related to the option @option{-icount}.
 ETEXI
 
+DEF("clock-ifetch", HAS_ARG, QEMU_OPTION_clock_ifetch, \
+    "-clock-ifetch <frequency>\n" \
+    "                make user-time related syscalls return f(ifetch / <frequency>)\n",
+     QEMU_ARCH_ARM)
+STEXI
+@item -clock-ifetch @var{frequency}
+@findex -clock-ifetch
+This option makes user-time related system-calls -- times() for Linux
+and clock() for ARM semi-hosting -- to return the result of the
+following formula instead of the host user-time:
+@example
+    (ifetch_counter / frequency) * sysconf(_SC_CLK_TCK)
+@end example
+
+where @var{ifetch_counter} is the number of fetched instructions,
+@var{frequency} is the number of fetched instructions per second
+(argument of the option @option{-clock-ifetch}) and
+@var{sysconf(_SC_CLK_TCK)} is the current number of clock ticks per
+second, this latter is hard-coded to 100 for ARM semi-hosting.
+
+This option is mainly useful to evaluate some compiler optimizations
+on part of a program, for instance:
+@example
+    before = clock();
+    /* evaluated code here */
+    after = clock();
+@end example
+
+Note that the type of the value returned by times() and clock() can be
+a 32-bit integer only, and thus it can overflow quite quickly.  This
+is where the "frequency" parameter comes in handy: it allows to scale
+down the returned values, for example:
+@example
+    $ qemu -semihosting -nographic -clock-ifetch 1Hz -kernel ./test-clock
+    274021248 - 1458032704 = 18446744072525540160  # overflow!
+
+    $ qemu -semihosting -nographic  -clock-ifetch 1KHz -kernel ./test-clock
+    1447000000 - 5000000 = 1442000000              # OK
+@end example
+ETEXI
+
 DEF("watchdog", HAS_ARG, QEMU_OPTION_watchdog, \
     "-watchdog i6300esb|ib700\n" \
     "                enable virtual hardware watchdog [default=none]\n",
