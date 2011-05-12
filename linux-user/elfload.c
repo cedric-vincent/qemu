@@ -834,7 +834,7 @@ struct exec
 #define TARGET_ELF_PAGESTART(_v) ((_v) & ~(unsigned long)(TARGET_ELF_EXEC_PAGESIZE-1))
 #define TARGET_ELF_PAGEOFFSET(_v) ((_v) & (TARGET_ELF_EXEC_PAGESIZE-1))
 
-#define DLINFO_ITEMS 12
+#define DLINFO_ITEMS 13
 
 static inline void memcpy_fromfs(void * to, const void * from, unsigned long n)
 {
@@ -1136,6 +1136,13 @@ static abi_ulong create_elf_tables(abi_ulong p, int argc, int envc,
     NEW_AUX_ENT(AT_EGID, (abi_ulong) getegid());
     NEW_AUX_ENT(AT_HWCAP, (abi_ulong) ELF_HWCAP);
     NEW_AUX_ENT(AT_CLKTCK, (abi_ulong) sysconf(_SC_CLK_TCK));
+
+    /* The dynamic linker of the GNU C library v2.10+ uses the ELF
+     * auxialiary vector AT_RANDOM as a pointer to a 16-bit random
+     * value.  Note the start of the text segment is not random at
+     * all, however it is definitively readeable. */
+    NEW_AUX_ENT(AT_RANDOM, (abi_ulong) info->start_code);
+
     if (k_platform)
         NEW_AUX_ENT(AT_PLATFORM, u_platform);
 #ifdef ARCH_DLINFO
@@ -1479,9 +1486,9 @@ static void load_symbols(struct elfhdr *hdr, int fd, abi_ulong load_bias)
 {
     int i, shnum, nsyms, sym_idx = 0, str_idx = 0;
     struct elf_shdr *shdr;
-    char *strings;
-    struct syminfo *s;
-    struct elf_sym *syms, *new_syms;
+    char *strings = NULL;
+    struct syminfo *s = NULL;
+    struct elf_sym *new_syms, *syms = NULL;
 
     shnum = hdr->e_shnum;
     i = shnum * sizeof(struct elf_shdr);
@@ -1506,24 +1513,19 @@ static void load_symbols(struct elfhdr *hdr, int fd, abi_ulong load_bias)
     /* Now know where the strtab and symtab are.  Snarf them.  */
     s = malloc(sizeof(*s));
     if (!s) {
-        return;
+        goto give_up;
     }
 
     i = shdr[str_idx].sh_size;
     s->disas_strtab = strings = malloc(i);
     if (!strings || pread(fd, strings, i, shdr[str_idx].sh_offset) != i) {
-        free(s);
-        free(strings);
-        return;
+        goto give_up;
     }
 
     i = shdr[sym_idx].sh_size;
     syms = malloc(i);
     if (!syms || pread(fd, syms, i, shdr[sym_idx].sh_offset) != i) {
-        free(s);
-        free(strings);
-        free(syms);
-        return;
+        goto give_up;
     }
 
     nsyms = i / sizeof(struct elf_sym);
@@ -1546,16 +1548,18 @@ static void load_symbols(struct elfhdr *hdr, int fd, abi_ulong load_bias)
         }
     }
 
+    /* No "useful" symbol.  */
+    if (nsyms == 0) {
+        goto give_up;
+    }
+
     /* Attempt to free the storage associated with the local symbols
        that we threw away.  Whether or not this has any effect on the
        memory allocation depends on the malloc implementation and how
        many symbols we managed to discard.  */
     new_syms = realloc(syms, nsyms * sizeof(*syms));
     if (new_syms == NULL) {
-        free(s);
-        free(syms);
-        free(strings);
-        return;
+        goto give_up;
     }
     syms = new_syms;
 
@@ -1570,6 +1574,13 @@ static void load_symbols(struct elfhdr *hdr, int fd, abi_ulong load_bias)
     s->lookup_symbol = lookup_symbolxx;
     s->next = syminfos;
     syminfos = s;
+
+    return;
+
+give_up:
+    free(s);
+    free(strings);
+    free(syms);
 }
 
 int load_elf_binary(struct linux_binprm * bprm, struct target_pt_regs * regs,

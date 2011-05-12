@@ -290,6 +290,14 @@ void qemu_notify_event(void);
 void qemu_cpu_kick(void *env);
 int qemu_cpu_self(void *env);
 
+/* Count the number of fetched instructions.  */
+extern int count_ifetch;
+void show_all_ifetch_counters(void);
+
+/* Number of fetched instructions per second.  */
+extern uint64_t clock_ifetch;
+uint64_t convert_string_to_frequency(const char *string);
+
 /* work queue */
 struct qemu_work_item {
     struct qemu_work_item *next;

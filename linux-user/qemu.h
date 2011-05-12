@@ -194,6 +194,7 @@ void fork_end(int child);
 #include "qemu-log.h"
 
 /* strace.c */
+const char *get_syscall_name(int num);
 void print_syscall(int num,
                    abi_long arg1, abi_long arg2, abi_long arg3,
                    abi_long arg4, abi_long arg5, abi_long arg6);
