@@ -1308,6 +1308,16 @@ static int nsyscalls = ARRAY_SIZE(scnames);
 /*
  * The public interface to this module.
  */
+const char *
+get_syscall_name(int num)
+{
+    int i;
+    for(i = 0; i < nsyscalls; i++)
+        if(scnames[i].nr == num)
+            return scnames[i].name;
+    return NULL;
+}
+
 void
 print_syscall(int num,
               abi_long arg1, abi_long arg2, abi_long arg3,

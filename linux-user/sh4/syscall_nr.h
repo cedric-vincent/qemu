@@ -78,7 +78,7 @@
 #define TARGET_NR_sigpending		 73
 #define TARGET_NR_sethostname	 74
 #define TARGET_NR_setrlimit		 75
-#define TARGET_NR_getrlimit	 	 76	/* Back compatible 2Gig limited rlimit */
+#define TARGET_NR_getrlimit		 76	/* Back compatible 2Gig limited rlimit */
 #define TARGET_NR_getrusage		 77
 #define TARGET_NR_gettimeofday	 78
 #define TARGET_NR_settimeofday	 79
@@ -125,7 +125,7 @@
 #define TARGET_NR_clone		120
 #define TARGET_NR_setdomainname	121
 #define TARGET_NR_uname		122
-#define TARGET_NR_modify_ldt		123
+#define TARGET_NR_cacheflush		123
 #define TARGET_NR_adjtimex		124
 #define TARGET_NR_mprotect		125
 #define TARGET_NR_sigprocmask	126
@@ -284,7 +284,7 @@
 #define TARGET_NR_mq_timedreceive    (TARGET_NR_mq_open+3)
 #define TARGET_NR_mq_notify          (TARGET_NR_mq_open+4)
 #define TARGET_NR_mq_getsetattr      (TARGET_NR_mq_open+5)
-#define TARGET_NR_sys_kexec_load	283
+#define TARGET_NR_kexec_load		283
 #define TARGET_NR_waitid		284
 #define TARGET_NR_add_key		285
 #define TARGET_NR_request_key	286
@@ -323,7 +323,7 @@
 #define TARGET_NR_epoll_pwait	319
 #define TARGET_NR_utimensat		320
 #define TARGET_NR_signalfd		321
-#define TARGET_NR_timerfd		322
+#define TARGET_NR_timerfd_create	322
 #define TARGET_NR_eventfd		323
 #define TARGET_NR_fallocate		324
 #define TARGET_NR_timerfd_settime	325
@@ -331,6 +331,10 @@
 #define TARGET_NR_signalfd4		327
 #define TARGET_NR_eventfd2		328
 #define TARGET_NR_epoll_create1	329
-#define TARGET_NR_dup3			330
+#define TARGET_NR_dup3		330
 #define TARGET_NR_pipe2		331
 #define TARGET_NR_inotify_init1	332
+#define TARGET_NR_preadv		333
+#define TARGET_NR_pwritev		334
+#define TARGET_NR_rt_tgsigqueueinfo	335
+#define TARGET_NR_perf_event_open	336

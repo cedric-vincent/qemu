@@ -4898,7 +4898,27 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
                 tmsp = lock_user(VERIFY_WRITE, arg1, sizeof(struct target_tms), 0);
                 if (!tmsp)
                     goto efault;
-                tmsp->tms_utime = tswapl(host_to_target_clock_t(tms.tms_utime));
+                if (clock_ifetch) {
+                    assert(count_ifetch);
+                    /* The following computation may look a little bit
+                     * "magic" but it is actually coherent in terms of
+                     * unit:
+                     *
+                     *     ifetch_counter       -> #instructions            (i)
+                     *     clock_ifetch         -> #instructions / #seconds (i/s)
+                     *     sysconf(_SC_CLK_TCK) -> #ticks / #seconds        (t/s)
+                     *
+                     * As a consequence the result is in #ticks since:
+                     *
+                     *     i / (i/s) * t/s      -> t
+                     */
+                    abi_long utime_ticks = (((CPUState*)cpu_env)->ifetch_counter / clock_ifetch)
+                        * sysconf(_SC_CLK_TCK);
+                    tmsp->tms_utime  = tswapl(utime_ticks);
+                }
+                else {
+                    tmsp->tms_utime  = tswapl(host_to_target_clock_t(tms.tms_utime));
+                }
                 tmsp->tms_stime = tswapl(host_to_target_clock_t(tms.tms_stime));
                 tmsp->tms_cutime = tswapl(host_to_target_clock_t(tms.tms_cutime));
                 tmsp->tms_cstime = tswapl(host_to_target_clock_t(tms.tms_cstime));
@@ -7494,7 +7514,8 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
 #endif
     default:
     unimplemented:
-        gemu_log("qemu: Unsupported syscall: %d\n", num);
+        gemu_log("qemu: Unsupported syscall: %d (%s)\n", num,
+                 get_syscall_name(num) ?: "unknown");
 #if defined(TARGET_NR_setxattr) || defined(TARGET_NR_get_thread_area) || defined(TARGET_NR_getdomainname) || defined(TARGET_NR_set_robust_list)
     unimplemented_nowarn:
 #endif
