@@ -1391,9 +1391,14 @@ static void load_elf_image(const char *image_name, int image_fd,
         info->brk = info->end_code;
     }
 
+#if defined(TARGET_ARM)
+    load_symbols(ehdr, image_fd, load_bias);
+    exit_addr = find_symbol("exit", ehdr->e_ident[EI_CLASS] == ELFCLASS64);
+#else
     if (qemu_log_enabled()) {
         load_symbols(ehdr, image_fd, load_bias);
     }
+#endif
 
     close(image_fd);
     return;

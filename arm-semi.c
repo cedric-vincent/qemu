@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <time.h>
 
+#include "disas.h"
 #include "cpu.h"
 #ifdef CONFIG_USER_ONLY
 #include "qemu.h"
@@ -509,8 +510,11 @@ uint32_t do_arm_semihosting(CPUState *env)
             return 0;
         }
     case SYS_EXIT:
-        gdb_exit(env, 0);
-        exit(0);
+        if (!exit_addr) {
+            fprintf(stderr, "qemu: Unknown exit code\n");
+        }
+        gdb_exit(env, exit_code);
+        exit(exit_code);
     default:
         fprintf(stderr, "qemu: Unsupported SemiHosting SWI 0x%02x\n", nr);
         cpu_dump_state(env, stderr, fprintf, 0);
