@@ -575,6 +575,15 @@ int cpu_exec(CPUState *env1)
 #endif /* DEBUG_DISAS || CONFIG_DEBUG_EXEC */
                 spin_lock(&tb_lock);
                 tb = tb_find_fast();
+
+#if defined(TARGET_ARM)
+                /* When we reach exit(), make a copy of the
+                   application exit code.  */
+                if (tb->pc == exit_addr) {
+                    exit_code = env->regs[0];
+                }
+#endif
+
                 /* Note: we do it here to avoid a gcc bug on Mac OS X when
                    doing it in tb_find_slow */
                 if (tb_invalidated_flag) {

@@ -320,6 +320,8 @@ int load_elf(const char *filename, uint64_t (*translate_fn)(void *, uint64_t),
                          pentry, lowaddr, highaddr, elf_machine, clear_lsb);
     }
 
+    exit_addr = find_symbol("exit", e_ident[EI_CLASS] == ELFCLASS64);
+
     close(fd);
     return ret;
 

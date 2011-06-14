@@ -11,6 +11,44 @@
 /* Filled in by elfload.c.  Simplistic, but will do for now. */
 struct syminfo *syminfos = NULL;
 
+/* Retrieve the address of a symbol.  */
+uint64_t find_symbol(const char *name, int is_elf_class64)
+{
+    struct syminfo *syminfo;
+    int i;
+
+    for (syminfo = syminfos; syminfo; syminfo = syminfo->next) {
+        struct elf64_sym *syms64 = NULL;
+        struct elf32_sym *syms32 = NULL;
+
+        if (is_elf_class64) {
+            syms64 = syminfo->disas_symtab.elf64;
+        }
+        else {
+            syms32 = syminfo->disas_symtab.elf32;
+        }
+
+#define SYMS(i, field) (is_elf_class64            \
+                        ? syms64[(i)].st_ ## field     \
+                        : syms32[(i)].st_ ## field)
+
+        for (i = 0; i < syminfo->disas_num_syms; i++) {
+            if (strcmp(name, syminfo->disas_strtab + SYMS(i, name))) {
+                continue;
+            }
+
+            return (uint64_t)SYMS(i, value);
+        }
+    }
+    return 0;
+}
+
+/* On ARM, semi-hosting has no room for application exit code. To work
+   around this, when we start executing exit(), we take note of its
+   parameter, which will be used as return code.  */
+uint64_t exit_code = 0;
+uint64_t exit_addr = 0;
+
 /* Get LENGTH bytes from info's buffer, at target address memaddr.
    Transfer them to myaddr.  */
 int

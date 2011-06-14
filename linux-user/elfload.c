@@ -1055,7 +1055,7 @@ static void zero_bss(abi_ulong elf_bss, abi_ulong last_bss, int prot)
     host_start = (uintptr_t) g2h(elf_bss);
     host_end = (uintptr_t) g2h(last_bss);
     host_map_start = (host_start + qemu_real_host_page_size - 1);
-    host_map_start &= -qemu_real_host_page_size;
+    host_map_start &= ~(qemu_real_host_page_size -1);
 
     if (host_map_start < host_end) {
         void *p = mmap((void *)host_map_start, host_end - host_map_start,
@@ -1391,9 +1391,14 @@ static void load_elf_image(const char *image_name, int image_fd,
         info->brk = info->end_code;
     }
 
+#if defined(TARGET_ARM)
+    load_symbols(ehdr, image_fd, load_bias);
+    exit_addr = find_symbol("exit", ehdr->e_ident[EI_CLASS] == ELFCLASS64);
+#else
     if (qemu_log_enabled()) {
         load_symbols(ehdr, image_fd, load_bias);
     }
+#endif
 
     close(image_fd);
     return;
