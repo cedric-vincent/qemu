@@ -1384,7 +1384,12 @@ static void load_elf_image(const char *image_name, int image_fd,
         info->brk = info->end_code;
     }
 
+#ifdef CONFIG_TCG_PLUGIN
+    /* Load the program's symbol table for TCG plugins.  */
+    if (qemu_log_enabled() || pinterp_name) {
+#else
     if (qemu_log_enabled()) {
+#endif
         load_symbols(ehdr, image_fd, load_bias);
     }
 

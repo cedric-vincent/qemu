@@ -32,6 +32,7 @@
 /* For tb_lock */
 #include "exec-all.h"
 #include "tcg.h"
+#include "tcg-plugin.h"
 #include "qemu-timer.h"
 #include "envlist.h"
 
@@ -2636,6 +2637,9 @@ static void usage(void)
            "-L path           set the elf interpreter prefix (default=%s)\n"
            "-s size           set the stack size in bytes (default=%ld)\n"
            "-cpu model        select CPU (-cpu ? for list)\n"
+#ifdef CONFIG_TCG_PLUGIN
+           "-tcg-plugin dso   load the dynamic shared object as TCG plugin\n"
+#endif /* CONFIG_TCG_PLUGIN */
            "-drop-ld-preload  drop LD_PRELOAD for target process\n"
            "-E var=value      sets/modifies targets environment variable(s)\n"
            "-U var            unsets targets environment variable(s)\n"
@@ -2842,6 +2846,10 @@ int main(int argc, char **argv, char **envp)
 #endif
                 exit(1);
             }
+#ifdef CONFIG_TCG_PLUGIN
+        } else if (!strcmp(r, "tcg-plugin")) {
+            tcg_plugin_load(argv[optind++]);
+#endif /* CONFIG_TCG_PLUGIN */
 #if defined(CONFIG_USE_GUEST_BASE)
         } else if (!strcmp(r, "B")) {
            guest_base = strtol(argv[optind++], NULL, 0);

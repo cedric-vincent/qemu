@@ -42,14 +42,14 @@ kvm.o kvm-all.o vhost.o vhost_net.o: QEMU_CFLAGS+=$(KVM_CFLAGS)
 config-target.h: config-target.h-timestamp
 config-target.h-timestamp: config-target.mak
 
-ifdef CONFIG_SYSTEMTAP_TRACE
-stap: $(QEMU_PROG).stp
-
 ifdef CONFIG_USER_ONLY
 TARGET_TYPE=user
 else
 TARGET_TYPE=system
 endif
+
+ifdef CONFIG_SYSTEMTAP_TRACE
+stap: $(QEMU_PROG).stp
 
 $(QEMU_PROG).stp:
 	$(call quiet-command,sh $(SRC_PATH)/scripts/tracetool \
@@ -71,6 +71,7 @@ all: $(PROGS) stap
 # cpu emulator library
 libobj-y = exec.o translate-all.o cpu-exec.o translate.o
 libobj-y += tcg/tcg.o
+libobj-$(CONFIG_TCG_PLUGIN) += tcg/tcg-plugin.o
 libobj-$(CONFIG_SOFTFLOAT) += fpu/softfloat.o
 libobj-$(CONFIG_NOSOFTFLOAT) += fpu/softfloat-native.o
 libobj-y += op_helper.o helper.o
@@ -340,12 +341,39 @@ obj-y += $(addprefix $(HWDIR)/, $(hw-obj-y))
 
 endif # CONFIG_SOFTMMU
 
+#########################################################
+# TCG plugin targets
+
+ifdef CONFIG_TCG_PLUGIN
+
+TCG_PLUGINS := $(patsubst $(SRC_PATH)/tcg/plugins/%.c,tcg-plugin-%.so,$(wildcard $(SRC_PATH)/tcg/plugins/*.c))
+all: $(TCG_PLUGINS)
+
+.SECONDARY: $(TCG_PLUGINS:.so=.o)
+
+tcg/tcg-plugin.o: QEMU_CFLAGS += -DEMULATION_MODE=\"$(TARGET_TYPE)\"
+
+tcg-plugin-%.o: QEMU_CFLAGS += -fPIC -DEMULATION_MODE=\"$(TARGET_TYPE)\"
+tcg-plugin-%.o: $(SRC_PATH)/tcg/plugins/%.c
+	$(call COMPILE,CC)
+
+tcg-plugin-%.so: LDFLAGS += -shared
+tcg-plugin-%.so: tcg-plugin-%.o
+	$(call LINK,$^)
+
+# This TCG plugin requires an external library, don't abort the build
+# if something goes wrong.
+.IGNORE: tcg-plugin-profile.o tcg-plugin-profile.so
+tcg-plugin-profile.o: CFLAGS += $(shell pkg-config --cflags glib-2.0)
+tcg-plugin-profile.so: LDFLAGS += $(shell pkg-config --libs glib-2.0)
+
+endif # CONFIG_TCG_PLUGIN
+
 obj-y += $(addprefix ../, $(trace-obj-y))
 obj-$(CONFIG_GDBSTUB_XML) += gdbstub-xml.o
 
 $(QEMU_PROG): $(obj-y) $(obj-$(TARGET_BASE_ARCH)-y)
 	$(call LINK,$(obj-y) $(obj-$(TARGET_BASE_ARCH)-y))
-
 
 gdbstub-xml.c: $(TARGET_XML_FILES) $(SRC_PATH)/scripts/feature_to_c.sh
 	$(call quiet-command,rm -f $@ && $(SHELL) $(SRC_PATH)/scripts/feature_to_c.sh $@ $(TARGET_XML_FILES),"  GEN   $(TARGET_DIR)$@")
@@ -363,6 +391,9 @@ clean:
 ifdef CONFIG_SYSTEMTAP_TRACE
 	rm -f *.stp
 endif
+ifdef CONFIG_TCG_PLUGIN
+	rm -f $(TCG_PLUGINS)
+endif
 
 install: all
 ifneq ($(PROGS),)
@@ -374,6 +405,10 @@ endif
 ifdef CONFIG_SYSTEMTAP_TRACE
 	$(INSTALL_DIR) "$(DESTDIR)$(datadir)/../systemtap/tapset"
 	$(INSTALL_DATA) $(QEMU_PROG).stp "$(DESTDIR)$(datadir)/../systemtap/tapset"
+endif
+ifdef CONFIG_TCG_PLUGIN
+	$(INSTALL_DIR) "$(DESTDIR)$(libexecdir)/$(TARGET_ARCH)/$(TARGET_TYPE)"
+	$(INSTALL_PROG) $(TCG_PLUGINS) "$(DESTDIR)$(libexecdir)/$(TARGET_ARCH)/$(TARGET_TYPE)"
 endif
 
 # Include automatically generated dependency files
