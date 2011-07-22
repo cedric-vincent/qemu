@@ -32,6 +32,7 @@
 /* For tb_lock */
 #include "exec-all.h"
 #include "tcg.h"
+#include "tcg-plugin.h"
 #include "qemu-timer.h"
 #include "envlist.h"
 
@@ -2639,6 +2640,9 @@ static void usage(void)
            "-cpu model        select CPU (-cpu ? for list)\n"
            "-count-ifetch     count the number of fetched instructions\n"
            "-clock-ifetch N   make user-time related syscalls return f(ifetch / N)\n"
+#ifdef CONFIG_TCG_PLUGIN
+           "-tcg-plugin dso   load the dynamic shared object as TCG plugin\n"
+#endif /* CONFIG_TCG_PLUGIN */
            "-drop-ld-preload  drop LD_PRELOAD for target process\n"
            "-E var=value      sets/modifies targets environment variable(s)\n"
            "-U var            unsets targets environment variable(s)\n"
@@ -2849,6 +2853,10 @@ int main(int argc, char **argv, char **envp)
         } else if (!strcmp(r, "clock-ifetch")) {
             count_ifetch |= 0x2;
             clock_ifetch = convert_string_to_frequency(argv[optind++]);
+#ifdef CONFIG_TCG_PLUGIN
+        } else if (!strcmp(r, "tcg-plugin")) {
+            tcg_plugin_load(argv[optind++]);
+#endif /* CONFIG_TCG_PLUGIN */
 #if defined(CONFIG_USE_GUEST_BASE)
         } else if (!strcmp(r, "B")) {
            guest_base = strtol(argv[optind++], NULL, 0);

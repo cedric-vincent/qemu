@@ -4,6 +4,7 @@ config-host.*
 config-target.*
 trace.h
 trace.c
+!tcg/plugins/trace.c
 trace-dtrace.h
 trace-dtrace.dtrace
 *-timestamp

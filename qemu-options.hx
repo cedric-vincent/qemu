@@ -2302,6 +2302,19 @@ STEXI
 Set TB size.
 ETEXI
 
+#ifdef CONFIG_TCG_PLUGIN
+DEF("tcg-plugin", HAS_ARG, QEMU_OPTION_tcg_plugin, \
+    "-tcg-plugin dso load the dynamic shared object as TCG plugin\n", QEMU_ARCH_ALL)
+STEXI
+@item -tcg-plugin @var{dso}
+@findex -tcg-plugin
+The TCG plugin support allows an external shared library to be
+notified each time a basic block is translated into the TCG internal
+representation, in the aim of instrumenting the emulated code to
+produce program analysis, à la Valgrind or DynamoRIO for instance.
+ETEXI
+#endif
+
 DEF("incoming", HAS_ARG, QEMU_OPTION_incoming, \
     "-incoming p     prepare for incoming migration, listen on port p\n",
     QEMU_ARCH_ALL)

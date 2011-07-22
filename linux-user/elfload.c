@@ -1391,13 +1391,17 @@ static void load_elf_image(const char *image_name, int image_fd,
         info->brk = info->end_code;
     }
 
-#if defined(TARGET_ARM)
-    load_symbols(ehdr, image_fd, load_bias);
-    exit_addr = find_symbol("exit", ehdr->e_ident[EI_CLASS] == ELFCLASS64);
+#if defined(TARGET_ARM) || defined(CONFIG_TCG_PLUGIN)
+    /* Load the program's symbol table for TCG plugins.  */
+    if (qemu_log_enabled() || pinterp_name) {
 #else
     if (qemu_log_enabled()) {
+#endif
         load_symbols(ehdr, image_fd, load_bias);
     }
+
+#if defined(TARGET_ARM)
+    exit_addr = find_symbol("exit", ehdr->e_ident[EI_CLASS] == ELFCLASS64);
 #endif
 
     close(image_fd);

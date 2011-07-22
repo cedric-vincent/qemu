@@ -31,6 +31,7 @@
 #include "dma.h"
 #include "kvm.h"
 #include "exec-all.h"
+#include "tcg-plugin.h"
 
 #include "cpus.h"
 #include "compatfd.h"
@@ -290,6 +291,7 @@ void resume_all_vcpus(void)
 void pause_all_vcpus(void)
 {
     show_all_ifetch_counters();
+    tcg_plugin_cpus_stopped();
 }
 
 void qemu_cpu_kick(void *env)
@@ -785,6 +787,7 @@ void pause_all_vcpus(void)
     }
 
     show_all_ifetch_counters();
+    tcg_plugin_cpus_stopped();
 }
 
 void resume_all_vcpus(void)

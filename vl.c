@@ -1905,6 +1905,14 @@ static const QEMUOption *lookup_opt(int argc, char **argv,
     return popt;
 }
 
+/* Provide a forward declaration since "tcg/tcg-plugin.h" can't be
+ * included here. */
+#ifdef CONFIG_TCG_PLUGIN
+extern void tcg_plugin_load(const char *);
+#else
+#define tcg_plugin_load(a)
+#endif
+
 int main(int argc, char **argv, char **envp)
 {
     const char *gdbstub_dev = NULL;
@@ -1930,6 +1938,9 @@ int main(int argc, char **argv, char **envp)
     int show_vnc_port = 0;
     int defconfig = 1;
 
+#ifdef CONFIG_TCG_PLUGIN
+    const char *plugin_filename = NULL;
+#endif
 #ifdef CONFIG_SIMPLE_TRACE
     const char *trace_file = NULL;
 #endif
@@ -2673,6 +2684,11 @@ int main(int argc, char **argv, char **envp)
                 count_ifetch |= 0x2;
                 clock_ifetch = convert_string_to_frequency(optarg);
                 break;
+#ifdef CONFIG_TCG_PLUGIN
+            case QEMU_OPTION_tcg_plugin:
+                plugin_filename = optarg;
+                break;
+#endif /* CONFIG_TCG_PLUGIN */
             case QEMU_OPTION_icount:
                 icount_option = optarg;
                 break;
@@ -2795,6 +2811,11 @@ int main(int argc, char **argv, char **envp)
                 machine->max_cpus);
         exit(1);
     }
+
+#ifdef CONFIG_TCG_PLUGIN
+    if (plugin_filename)
+        tcg_plugin_load(plugin_filename);
+#endif /* CONFIG_TCG_PLUGIN */
 
     qemu_opts_foreach(qemu_find_opts("device"), default_driver_check, NULL, 0);
     qemu_opts_foreach(qemu_find_opts("global"), default_driver_check, NULL, 0);

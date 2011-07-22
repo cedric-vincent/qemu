@@ -28,6 +28,7 @@
 #include "cpu.h"
 #include "exec-all.h"
 #include "tcg.h"
+#include "tcg-plugin.h"
 #include "hw/hw.h"
 #include "hw/qdev.h"
 #include "osdep.h"
@@ -1893,6 +1894,7 @@ void cpu_abort(CPUState *env, const char *fmt, ...)
     va_list ap2;
 
     show_all_ifetch_counters();
+    tcg_plugin_cpus_stopped();
 
     va_start(ap, fmt);
     va_copy(ap2, ap);
