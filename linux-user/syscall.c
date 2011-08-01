@@ -689,49 +689,81 @@ char *target_strerror(int err)
 
 static abi_ulong target_brk;
 static abi_ulong target_original_brk;
+static abi_ulong brk_page;
 
 void target_set_brk(abi_ulong new_brk)
 {
     target_original_brk = target_brk = HOST_PAGE_ALIGN(new_brk);
+    brk_page = HOST_PAGE_ALIGN(target_brk);
 }
+
+//#define DEBUGF_BRK(message, args...) do { fprintf(stderr, (message), ## args); } while (0)
+#define DEBUGF_BRK(message, args...)
 
 /* do_brk() must return target values and target errnos. */
 abi_long do_brk(abi_ulong new_brk)
 {
-    abi_ulong brk_page;
     abi_long mapped_addr;
     int	new_alloc_size;
 
-    if (!new_brk)
-        return target_brk;
-    if (new_brk < target_original_brk)
-        return target_brk;
+    DEBUGF_BRK("do_brk(%#010x) -> ", new_brk);
 
-    brk_page = HOST_PAGE_ALIGN(target_brk);
+    if (!new_brk) {
+        DEBUGF_BRK("%#010x (!new_brk)\n", target_brk);
+        return target_brk;
+    }
+    if (new_brk < target_original_brk) {
+        DEBUGF_BRK("%#010x (new_brk < target_original_brk)\n", target_brk);
+        return target_brk;
+    }
 
-    /* If the new brk is less than this, set it and we're done... */
-    if (new_brk < brk_page) {
+    /* If the new brk is less than the highest page reserved to the
+     * target heap allocation, set it and we're almost done...  */
+    if (new_brk <= brk_page) {
+        /* Heap contents are initialized to zero, as for anonymous
+         * mapped pages.  */
+        if (new_brk > target_brk) {
+            memset(g2h(target_brk), 0, new_brk - target_brk);
+        }
 	target_brk = new_brk;
+        DEBUGF_BRK("%#010x (new_brk <= brk_page)\n", target_brk);
     	return target_brk;
     }
 
-    /* We need to allocate more memory after the brk... */
-    new_alloc_size = HOST_PAGE_ALIGN(new_brk - brk_page + 1);
+    /* We need to allocate more memory after the brk... Note that
+     * we don't use MAP_FIXED because that will map over the top of
+     * any existing mapping (like the one with the host libc or qemu
+     * itself); instead we treat "mapped but at wrong address" as
+     * a failure and unmap again.
+     */
+    new_alloc_size = HOST_PAGE_ALIGN(new_brk - brk_page);
     mapped_addr = get_errno(target_mmap(brk_page, new_alloc_size,
                                         PROT_READ|PROT_WRITE,
-                                        MAP_ANON|MAP_FIXED|MAP_PRIVATE, 0, 0));
+                                        MAP_ANON|MAP_PRIVATE, 0, 0));
+
+    if (mapped_addr == brk_page) {
+        target_brk = new_brk;
+        brk_page = HOST_PAGE_ALIGN(target_brk);
+        DEBUGF_BRK("%#010x (mapped_addr == brk_page)\n", target_brk);
+        return target_brk;
+    } else if (mapped_addr != -1) {
+        /* Mapped but at wrong address, meaning there wasn't actually
+         * enough space for this brk.
+         */
+        target_munmap(mapped_addr, new_alloc_size);
+        mapped_addr = -1;
+        DEBUGF_BRK("%#010x (mapped_addr != -1)\n", target_brk);
+    }
+    else {
+        DEBUGF_BRK("%#010x (otherwise)\n", target_brk);
+    }
 
 #if defined(TARGET_ALPHA)
     /* We (partially) emulate OSF/1 on Alpha, which requires we
        return a proper errno, not an unchanged brk value.  */
-    if (is_error(mapped_addr)) {
-        return -TARGET_ENOMEM;
-    }
+    return -TARGET_ENOMEM;
 #endif
-
-    if (!is_error(mapped_addr)) {
-	target_brk = new_brk;
-    }
+    /* For everything else, return the previous break. */
     return target_brk;
 }
 
@@ -4898,7 +4930,27 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
                 tmsp = lock_user(VERIFY_WRITE, arg1, sizeof(struct target_tms), 0);
                 if (!tmsp)
                     goto efault;
-                tmsp->tms_utime = tswapl(host_to_target_clock_t(tms.tms_utime));
+                if (clock_ifetch) {
+                    assert(count_ifetch);
+                    /* The following computation may look a little bit
+                     * "magic" but it is actually coherent in terms of
+                     * unit:
+                     *
+                     *     ifetch_counter       -> #instructions            (i)
+                     *     clock_ifetch         -> #instructions / #seconds (i/s)
+                     *     sysconf(_SC_CLK_TCK) -> #ticks / #seconds        (t/s)
+                     *
+                     * As a consequence the result is in #ticks since:
+                     *
+                     *     i / (i/s) * t/s      -> t
+                     */
+                    abi_long utime_ticks = (((CPUState*)cpu_env)->ifetch_counter / clock_ifetch)
+                        * sysconf(_SC_CLK_TCK);
+                    tmsp->tms_utime  = tswapl(utime_ticks);
+                }
+                else {
+                    tmsp->tms_utime  = tswapl(host_to_target_clock_t(tms.tms_utime));
+                }
                 tmsp->tms_stime = tswapl(host_to_target_clock_t(tms.tms_stime));
                 tmsp->tms_cutime = tswapl(host_to_target_clock_t(tms.tms_cutime));
                 tmsp->tms_cstime = tswapl(host_to_target_clock_t(tms.tms_cstime));
@@ -7494,7 +7546,8 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
 #endif
     default:
     unimplemented:
-        gemu_log("qemu: Unsupported syscall: %d\n", num);
+        gemu_log("qemu: Unsupported syscall: %d (%s)\n", num,
+                 get_syscall_name(num) ?: "unknown");
 #if defined(TARGET_NR_setxattr) || defined(TARGET_NR_get_thread_area) || defined(TARGET_NR_getdomainname) || defined(TARGET_NR_set_robust_list)
     unimplemented_nowarn:
 #endif

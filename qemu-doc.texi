@@ -2262,7 +2262,9 @@ Debug options:
 
 @table @option
 @item -d
-Activate log (logfile=/tmp/qemu.log)
+Activate log
+@item -logfile filename
+Set log filename to 'fn' (default=/tmp/qemu.log)
 @item -p pagesize
 Act as if the host page size was 'pagesize' bytes
 @item -g port

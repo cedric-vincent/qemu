@@ -236,6 +236,10 @@ void cpu_reset(CPUARMState *env)
     }
     env->vfp.xregs[ARM_VFP_FPEXC] = 0;
     env->cp15.c2_base_mask = 0xffffc000u;
+    /* v7 performance monitor control register: same implementor
+     * field as main ID register, and we implement no event counters.
+     */
+    env->cp15.c9_pmcr = (id & 0xff000000);
 #endif
     set_flush_to_zero(1, &env->vfp.standard_fp_status);
     set_flush_inputs_to_zero(1, &env->vfp.standard_fp_status);
@@ -1450,8 +1454,49 @@ void HELPER(set_cp15)(CPUState *env, uint32_t insn, uint32_t val)
     case 7: /* Cache control.  */
         env->cp15.c15_i_max = 0x000;
         env->cp15.c15_i_min = 0xff0;
-        /* No cache, so nothing to do.  */
-        /* ??? MPCore has VA to PA translation functions.  */
+        if (op1 != 0) {
+            goto bad_reg;
+        }
+        /* No cache, so nothing to do except VA->PA translations. */
+        if (arm_feature(env, ARM_FEATURE_V6K)) {
+            switch (crm) {
+            case 4:
+                if (arm_feature(env, ARM_FEATURE_V7)) {
+                    env->cp15.c7_par = val & 0xfffff6ff;
+                } else {
+                    env->cp15.c7_par = val & 0xfffff1ff;
+                }
+                break;
+            case 8: {
+                uint32_t phys_addr;
+                target_ulong page_size;
+                int prot;
+                int ret, is_user = op2 & 2;
+                int access_type = op2 & 1;
+
+                if (op2 & 4) {
+                    /* Other states are only available with TrustZone */
+                    goto bad_reg;
+                }
+                ret = get_phys_addr(env, val, access_type, is_user,
+                                    &phys_addr, &prot, &page_size);
+                if (ret == 0) {
+                    /* We do not set any attribute bits in the PAR */
+                    if (page_size == (1 << 24)
+                        && arm_feature(env, ARM_FEATURE_V7)) {
+                        env->cp15.c7_par = (phys_addr & 0xff000000) | 1 << 1;
+                    } else {
+                        env->cp15.c7_par = phys_addr & 0xfffff000;
+                    }
+                } else {
+                    env->cp15.c7_par = ((ret & (10 << 1)) >> 5) |
+                                       ((ret & (12 << 1)) >> 6) |
+                                       ((ret & 0xf) << 1) | 1;
+                }
+                break;
+            }
+            }
+        }
         break;
     case 8: /* MMU TLB control.  */
         switch (op2) {
@@ -1500,6 +1545,81 @@ void HELPER(set_cp15)(CPUState *env, uint32_t insn, uint32_t val)
         case 1: /* TCM memory region registers.  */
             /* Not implemented.  */
             goto bad_reg;
+        case 12: /* Performance monitor control */
+            /* Performance monitors are implementation defined in v7,
+             * but with an ARM recommended set of registers, which we
+             * follow (although we don't actually implement any counters)
+             */
+            if (!arm_feature(env, ARM_FEATURE_V7)) {
+                goto bad_reg;
+            }
+            switch (op2) {
+            case 0: /* performance monitor control register */
+                /* only the DP, X, D and E bits are writable */
+                env->cp15.c9_pmcr &= ~0x39;
+                env->cp15.c9_pmcr |= (val & 0x39);
+                break;
+            case 1: /* Count enable set register */
+                val &= (1 << 31);
+                env->cp15.c9_pmcnten |= val;
+                break;
+            case 2: /* Count enable clear */
+                val &= (1 << 31);
+                env->cp15.c9_pmcnten &= ~val;
+                break;
+            case 3: /* Overflow flag status */
+                env->cp15.c9_pmovsr &= ~val;
+                break;
+            case 4: /* Software increment */
+                /* RAZ/WI since we don't implement the software-count event */
+                break;
+            case 5: /* Event counter selection register */
+                /* Since we don't implement any events, writing to this register
+                 * is actually UNPREDICTABLE. So we choose to RAZ/WI.
+                 */
+                break;
+            default:
+                goto bad_reg;
+            }
+            break;
+        case 13: /* Performance counters */
+            if (!arm_feature(env, ARM_FEATURE_V7)) {
+                goto bad_reg;
+            }
+            switch (op2) {
+            case 0: /* Cycle count register: not implemented, so RAZ/WI */
+                break;
+            case 1: /* Event type select */
+                env->cp15.c9_pmxevtyper = val & 0xff;
+                break;
+            case 2: /* Event count register */
+                /* Unimplemented (we have no events), RAZ/WI */
+                break;
+            default:
+                goto bad_reg;
+            }
+            break;
+        case 14: /* Performance monitor control */
+            if (!arm_feature(env, ARM_FEATURE_V7)) {
+                goto bad_reg;
+            }
+            switch (op2) {
+            case 0: /* user enable */
+                env->cp15.c9_pmuserenr = val & 1;
+                /* changes access rights for cp registers, so flush tbs */
+                tb_flush(env);
+                break;
+            case 1: /* interrupt enable set */
+                /* We have no event counters so only the C bit can be changed */
+                val &= (1 << 31);
+                env->cp15.c9_pminten |= val;
+                break;
+            case 2: /* interrupt enable clear */
+                val &= (1 << 31);
+                env->cp15.c9_pminten &= ~val;
+                break;
+            }
+            break;
         default:
             goto bad_reg;
         }
@@ -1767,32 +1887,89 @@ uint32_t HELPER(get_cp15)(CPUState *env, uint32_t insn)
 	    }
         }
     case 7: /* Cache control.  */
+        if (crm == 4 && op1 == 0 && op2 == 0) {
+            return env->cp15.c7_par;
+        }
         /* FIXME: Should only clear Z flag if destination is r15.  */
         env->ZF = 0;
         return 0;
     case 8: /* MMU TLB control.  */
         goto bad_reg;
-    case 9: /* Cache lockdown.  */
-        switch (op1) {
-        case 0: /* L1 cache.  */
-	    if (arm_feature(env, ARM_FEATURE_OMAPCP))
-		return 0;
-            switch (op2) {
-            case 0:
-                return env->cp15.c9_data;
-            case 1:
-                return env->cp15.c9_insn;
+    case 9:
+        switch (crm) {
+        case 0: /* Cache lockdown */
+            switch (op1) {
+            case 0: /* L1 cache.  */
+                if (arm_feature(env, ARM_FEATURE_OMAPCP)) {
+                    return 0;
+                }
+                switch (op2) {
+                case 0:
+                    return env->cp15.c9_data;
+                case 1:
+                    return env->cp15.c9_insn;
+                default:
+                    goto bad_reg;
+                }
+            case 1: /* L2 cache */
+                if (crm != 0) {
+                    goto bad_reg;
+                }
+                /* L2 Lockdown and Auxiliary control.  */
+                return 0;
             default:
                 goto bad_reg;
             }
-        case 1: /* L2 cache */
-            if (crm != 0)
+            break;
+        case 12: /* Performance monitor control */
+            if (!arm_feature(env, ARM_FEATURE_V7)) {
                 goto bad_reg;
-            /* L2 Lockdown and Auxiliary control.  */
-            return 0;
+            }
+            switch (op2) {
+            case 0: /* performance monitor control register */
+                return env->cp15.c9_pmcr;
+            case 1: /* count enable set */
+            case 2: /* count enable clear */
+                return env->cp15.c9_pmcnten;
+            case 3: /* overflow flag status */
+                return env->cp15.c9_pmovsr;
+            case 4: /* software increment */
+            case 5: /* event counter selection register */
+                return 0; /* Unimplemented, RAZ/WI */
+            default:
+                goto bad_reg;
+            }
+        case 13: /* Performance counters */
+            if (!arm_feature(env, ARM_FEATURE_V7)) {
+                goto bad_reg;
+            }
+            switch (op2) {
+            case 1: /* Event type select */
+                return env->cp15.c9_pmxevtyper;
+            case 0: /* Cycle count register */
+            case 2: /* Event count register */
+                /* Unimplemented, so RAZ/WI */
+                return 0;
+            default:
+                goto bad_reg;
+            }
+        case 14: /* Performance monitor control */
+            if (!arm_feature(env, ARM_FEATURE_V7)) {
+                goto bad_reg;
+            }
+            switch (op2) {
+            case 0: /* user enable */
+                return env->cp15.c9_pmuserenr;
+            case 1: /* interrupt enable set */
+            case 2: /* interrupt enable clear */
+                return env->cp15.c9_pminten;
+            default:
+                goto bad_reg;
+            }
         default:
             goto bad_reg;
         }
+        break;
     case 10: /* MMU TLB lockdown.  */
         /* ??? TLB lockdown not implemented.  */
         return 0;
@@ -2639,42 +2816,209 @@ float32 HELPER(rsqrts_f32)(float32 a, float32 b, CPUState *env)
 
 /* NEON helpers.  */
 
-/* TODO: The architecture specifies the value that the estimate functions
-   should return.  We return the exact reciprocal/root instead.  */
+/* Constants 256 and 512 are used in some helpers; we avoid relying on
+ * int->float conversions at run-time.  */
+#define float64_256 make_float64(0x4070000000000000LL)
+#define float64_512 make_float64(0x4080000000000000LL)
+
+/* The algorithm that must be used to calculate the estimate
+ * is specified by the ARM ARM.
+ */
+static float64 recip_estimate(float64 a, CPUState *env)
+{
+    float_status *s = &env->vfp.standard_fp_status;
+    /* q = (int)(a * 512.0) */
+    float64 q = float64_mul(float64_512, a, s);
+    int64_t q_int = float64_to_int64_round_to_zero(q, s);
+
+    /* r = 1.0 / (((double)q + 0.5) / 512.0) */
+    q = int64_to_float64(q_int, s);
+    q = float64_add(q, float64_half, s);
+    q = float64_div(q, float64_512, s);
+    q = float64_div(float64_one, q, s);
+
+    /* s = (int)(256.0 * r + 0.5) */
+    q = float64_mul(q, float64_256, s);
+    q = float64_add(q, float64_half, s);
+    q_int = float64_to_int64_round_to_zero(q, s);
+
+    /* return (double)s / 256.0 */
+    return float64_div(int64_to_float64(q_int, s), float64_256, s);
+}
+
 float32 HELPER(recpe_f32)(float32 a, CPUState *env)
 {
-    float_status *s = &env->vfp.fp_status;
-    float32 one = int32_to_float32(1, s);
-    return float32_div(one, a, s);
+    float_status *s = &env->vfp.standard_fp_status;
+    float64 f64;
+    uint32_t val32 = float32_val(a);
+
+    int result_exp;
+    int a_exp = (val32  & 0x7f800000) >> 23;
+    int sign = val32 & 0x80000000;
+
+    if (float32_is_any_nan(a)) {
+        if (float32_is_signaling_nan(a)) {
+            float_raise(float_flag_invalid, s);
+        }
+        return float32_default_nan;
+    } else if (float32_is_infinity(a)) {
+        return float32_set_sign(float32_zero, float32_is_neg(a));
+    } else if (float32_is_zero_or_denormal(a)) {
+        float_raise(float_flag_divbyzero, s);
+        return float32_set_sign(float32_infinity, float32_is_neg(a));
+    } else if (a_exp >= 253) {
+        float_raise(float_flag_underflow, s);
+        return float32_set_sign(float32_zero, float32_is_neg(a));
+    }
+
+    f64 = make_float64((0x3feULL << 52)
+                       | ((int64_t)(val32 & 0x7fffff) << 29));
+
+    result_exp = 253 - a_exp;
+
+    f64 = recip_estimate(f64, env);
+
+    val32 = sign
+        | ((result_exp & 0xff) << 23)
+        | ((float64_val(f64) >> 29) & 0x7fffff);
+    return make_float32(val32);
+}
+
+/* The algorithm that must be used to calculate the estimate
+ * is specified by the ARM ARM.
+ */
+static float64 recip_sqrt_estimate(float64 a, CPUState *env)
+{
+    float_status *s = &env->vfp.standard_fp_status;
+    float64 q;
+    int64_t q_int;
+
+    if (float64_lt(a, float64_half, s)) {
+        /* range 0.25 <= a < 0.5 */
+
+        /* a in units of 1/512 rounded down */
+        /* q0 = (int)(a * 512.0);  */
+        q = float64_mul(float64_512, a, s);
+        q_int = float64_to_int64_round_to_zero(q, s);
+
+        /* reciprocal root r */
+        /* r = 1.0 / sqrt(((double)q0 + 0.5) / 512.0);  */
+        q = int64_to_float64(q_int, s);
+        q = float64_add(q, float64_half, s);
+        q = float64_div(q, float64_512, s);
+        q = float64_sqrt(q, s);
+        q = float64_div(float64_one, q, s);
+    } else {
+        /* range 0.5 <= a < 1.0 */
+
+        /* a in units of 1/256 rounded down */
+        /* q1 = (int)(a * 256.0); */
+        q = float64_mul(float64_256, a, s);
+        int64_t q_int = float64_to_int64_round_to_zero(q, s);
+
+        /* reciprocal root r */
+        /* r = 1.0 /sqrt(((double)q1 + 0.5) / 256); */
+        q = int64_to_float64(q_int, s);
+        q = float64_add(q, float64_half, s);
+        q = float64_div(q, float64_256, s);
+        q = float64_sqrt(q, s);
+        q = float64_div(float64_one, q, s);
+    }
+    /* r in units of 1/256 rounded to nearest */
+    /* s = (int)(256.0 * r + 0.5); */
+
+    q = float64_mul(q, float64_256,s );
+    q = float64_add(q, float64_half, s);
+    q_int = float64_to_int64_round_to_zero(q, s);
+
+    /* return (double)s / 256.0;*/
+    return float64_div(int64_to_float64(q_int, s), float64_256, s);
 }
 
 float32 HELPER(rsqrte_f32)(float32 a, CPUState *env)
 {
-    float_status *s = &env->vfp.fp_status;
-    float32 one = int32_to_float32(1, s);
-    return float32_div(one, float32_sqrt(a, s), s);
+    float_status *s = &env->vfp.standard_fp_status;
+    int result_exp;
+    float64 f64;
+    uint32_t val;
+    uint64_t val64;
+
+    val = float32_val(a);
+
+    if (float32_is_any_nan(a)) {
+        if (float32_is_signaling_nan(a)) {
+            float_raise(float_flag_invalid, s);
+        }
+        return float32_default_nan;
+    } else if (float32_is_zero_or_denormal(a)) {
+        float_raise(float_flag_divbyzero, s);
+        return float32_set_sign(float32_infinity, float32_is_neg(a));
+    } else if (float32_is_neg(a)) {
+        float_raise(float_flag_invalid, s);
+        return float32_default_nan;
+    } else if (float32_is_infinity(a)) {
+        return float32_zero;
+    }
+
+    /* Normalize to a double-precision value between 0.25 and 1.0,
+     * preserving the parity of the exponent.  */
+    if ((val & 0x800000) == 0) {
+        f64 = make_float64(((uint64_t)(val & 0x80000000) << 32)
+                           | (0x3feULL << 52)
+                           | ((uint64_t)(val & 0x7fffff) << 29));
+    } else {
+        f64 = make_float64(((uint64_t)(val & 0x80000000) << 32)
+                           | (0x3fdULL << 52)
+                           | ((uint64_t)(val & 0x7fffff) << 29));
+    }
+
+    result_exp = (380 - ((val & 0x7f800000) >> 23)) / 2;
+
+    f64 = recip_sqrt_estimate(f64, env);
+
+    val64 = float64_val(f64);
+
+    val = ((val64 >> 63)  & 0x80000000)
+        | ((result_exp & 0xff) << 23)
+        | ((val64 >> 29)  & 0x7fffff);
+    return make_float32(val);
 }
 
 uint32_t HELPER(recpe_u32)(uint32_t a, CPUState *env)
 {
-    float_status *s = &env->vfp.fp_status;
-    float32 tmp;
-    tmp = int32_to_float32(a, s);
-    tmp = float32_scalbn(tmp, -32, s);
-    tmp = helper_recpe_f32(tmp, env);
-    tmp = float32_scalbn(tmp, 31, s);
-    return float32_to_int32(tmp, s);
+    float64 f64;
+
+    if ((a & 0x80000000) == 0) {
+        return 0xffffffff;
+    }
+
+    f64 = make_float64((0x3feULL << 52)
+                       | ((int64_t)(a & 0x7fffffff) << 21));
+
+    f64 = recip_estimate (f64, env);
+
+    return 0x80000000 | ((float64_val(f64) >> 21) & 0x7fffffff);
 }
 
 uint32_t HELPER(rsqrte_u32)(uint32_t a, CPUState *env)
 {
-    float_status *s = &env->vfp.fp_status;
-    float32 tmp;
-    tmp = int32_to_float32(a, s);
-    tmp = float32_scalbn(tmp, -32, s);
-    tmp = helper_rsqrte_f32(tmp, env);
-    tmp = float32_scalbn(tmp, 31, s);
-    return float32_to_int32(tmp, s);
+    float64 f64;
+
+    if ((a & 0xc0000000) == 0) {
+        return 0xffffffff;
+    }
+
+    if (a & 0x80000000) {
+        f64 = make_float64((0x3feULL << 52)
+                           | ((uint64_t)(a & 0x7fffffff) << 21));
+    } else { /* bits 31-30 == '01' */
+        f64 = make_float64((0x3fdULL << 52)
+                           | ((uint64_t)(a & 0x3fffffff) << 22));
+    }
+
+    f64 = recip_sqrt_estimate(f64, env);
+
+    return 0x80000000 | ((float64_val(f64) >> 21) & 0x7fffffff);
 }
 
 void HELPER(set_teecr)(CPUState *env, uint32_t val)

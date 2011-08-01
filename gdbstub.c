@@ -2380,6 +2380,7 @@ void gdb_exit(CPUState *env, int code)
   GDBState *s;
   char buf[4];
 
+  show_all_ifetch_counters();
   tcg_plugin_cpus_stopped();
 
   s = gdbserver_state;
@@ -2471,6 +2472,7 @@ void gdb_signalled(CPUState *env, int sig)
   GDBState *s;
   char buf[4];
 
+  show_all_ifetch_counters();
   tcg_plugin_cpus_stopped();
 
   s = gdbserver_state;

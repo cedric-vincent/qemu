@@ -165,7 +165,8 @@ typedef struct CPUWatchpoint {
     struct TranslationBlock *tb_jmp_cache[TB_JMP_CACHE_SIZE];           \
     /* buffer for temporaries in the code generator */                  \
     long temp_buf[CPU_TEMP_BUF_NLONGS];                                 \
-                                                                        \
+    /* Number of fetched instructions (option "-count-ifetch"). */      \
+    uint64_t ifetch_counter;                                            \
     int64_t icount_extra; /* Instructions until next timer event.  */   \
     /* Number of cycles left, with interrupt flag in high bit.          \
        This allows a single read-compare-cbranch-write sequence to test \

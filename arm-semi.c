@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <time.h>
 
+#include "disas.h"
 #include "cpu.h"
 #ifdef CONFIG_USER_ONLY
 #include "qemu.h"
@@ -35,6 +36,7 @@
 #include "qemu-common.h"
 #include "sysemu.h"
 #include "gdbstub.h"
+#include "hw/arm-misc.h"
 #endif
 
 #define SYS_OPEN        0x01
@@ -199,8 +201,11 @@ uint32_t do_arm_semihosting(CPUState *env)
         if (strcmp(s, ":tt") == 0) {
             if (ARG(1) < 4)
                 return STDIN_FILENO;
-            else
+            else if (ARG(1) == 4)
                 return STDOUT_FILENO;
+            else
+                return STDERR_FILENO; /* newlib/libgloss uses mode "a"
+                                       * (#8) to represent stderr.  */
         }
         if (use_gdb_syscalls()) {
             gdb_do_syscall(arm_semi_cb, "open,%s,%x,1a4", ARG(0),
@@ -348,7 +353,13 @@ uint32_t do_arm_semihosting(CPUState *env)
             return ret;
         }
     case SYS_CLOCK:
-        return clock() / (CLOCKS_PER_SEC / 100);
+        /* Number of centiseconds since execution started.  */
+        if (clock_ifetch) {
+            assert(count_ifetch);
+            return env->ifetch_counter / (clock_ifetch / 100);
+        } else {
+            return clock() / (CLOCKS_PER_SEC / 100);
+        }
     case SYS_TIME:
         return set_swi_errno(ts, time(NULL));
     case SYS_SYSTEM:
@@ -370,68 +381,88 @@ uint32_t do_arm_semihosting(CPUState *env)
         return syscall_err;
 #endif
     case SYS_GET_CMDLINE:
-#ifdef CONFIG_USER_ONLY
-        /* Build a commandline from the original argv.  */
+        /* Build a command-line from the original argv.
+         *
+         * The inputs are:
+         *     * ARG(0), pointer to a buffer of at least the size
+         *               specified in ARG(1).
+         *     * ARG(1), size of the buffer pointed to by ARG(0) in
+         *               bytes.
+         *
+         * The outputs are:
+         *     * ARG(0), pointer to null-terminated string of the
+         *               command line.
+         *     * ARG(1), length of the string pointed to by ARG(0).
+         */
         {
-            char *arm_cmdline_buffer;
-            const char *host_cmdline_buffer;
+            char *output_buffer;
+            size_t input_size = ARG(1);
+            size_t output_size;
+            int status = 0;
 
+            /* Compute the size of the output string.  */
+#if !defined(CONFIG_USER_ONLY)
+            output_size = strlen(ts->boot_info->kernel_filename)
+                        + 1  /* Separating space.  */
+                        + strlen(ts->boot_info->kernel_cmdline)
+                        + 1; /* Terminating null byte.  */
+#else
             unsigned int i;
-            unsigned int arm_cmdline_len = ARG(1);
-            unsigned int host_cmdline_len =
-                ts->info->arg_end-ts->info->arg_start;
 
-            if (!arm_cmdline_len || host_cmdline_len > arm_cmdline_len) {
-                return -1; /* not enough space to store command line */
-            }
-
-            if (!host_cmdline_len) {
+            output_size = ts->info->arg_end - ts->info->arg_start;
+            if (!output_size) {
                 /* We special-case the "empty command line" case (argc==0).
                    Just provide the terminating 0. */
-                arm_cmdline_buffer = lock_user(VERIFY_WRITE, ARG(0), 1, 0);
-                arm_cmdline_buffer[0] = 0;
-                unlock_user(arm_cmdline_buffer, ARG(0), 1);
-
-                /* Adjust the commandline length argument. */
-                SET_ARG(1, 0);
-                return 0;
+                output_size = 1;
             }
-
-            /* lock the buffers on the ARM side */
-            arm_cmdline_buffer =
-                lock_user(VERIFY_WRITE, ARG(0), host_cmdline_len, 0);
-            host_cmdline_buffer =
-                lock_user(VERIFY_READ, ts->info->arg_start,
-                                       host_cmdline_len, 1);
-
-            if (arm_cmdline_buffer && host_cmdline_buffer)
-            {
-                /* the last argument is zero-terminated;
-                   no need for additional termination */
-                memcpy(arm_cmdline_buffer, host_cmdline_buffer,
-                       host_cmdline_len);
-
-                /* separate arguments by white spaces */
-                for (i = 0; i < host_cmdline_len-1; i++) {
-                    if (arm_cmdline_buffer[i] == 0) {
-                        arm_cmdline_buffer[i] = ' ';
-                    }
-                }
-
-                /* Adjust the commandline length argument. */
-                SET_ARG(1, host_cmdline_len-1);
-            }
-
-            /* Unlock the buffers on the ARM side.  */
-            unlock_user(arm_cmdline_buffer, ARG(0), host_cmdline_len);
-            unlock_user((void*)host_cmdline_buffer, ts->info->arg_start, 0);
-
-            /* Return success if we could return a commandline.  */
-            return (arm_cmdline_buffer && host_cmdline_buffer) ? 0 : -1;
-        }
-#else
-        return -1;
 #endif
+
+            if (!input_size || output_size > input_size) {
+                 /* Not enough space to store command-line arguments.  */
+                return -1;
+            }
+
+            /* Adjust the command-line length.  */
+            SET_ARG(1, output_size - 1);
+
+            /* Lock the buffer on the ARM side.  */
+            output_buffer = lock_user(VERIFY_WRITE, ARG(0), output_size, 0);
+            if (!output_buffer) {
+                return -1;
+            }
+
+            /* Copy the command-line arguments.  */
+#if !defined(CONFIG_USER_ONLY)
+            pstrcpy(output_buffer, output_size, ts->boot_info->kernel_filename);
+            pstrcat(output_buffer, output_size, " ");
+            pstrcat(output_buffer, output_size, ts->boot_info->kernel_cmdline);
+#else
+            if (output_size == 1) {
+                /* Empty command-line.  */
+                output_buffer[0] = '\0';
+                goto out;
+            }
+
+            if (copy_from_user(output_buffer, ts->info->arg_start,
+                               output_size)) {
+                status = -1;
+                goto out;
+            }
+
+            /* Separate arguments by white spaces.  */
+            for (i = 0; i < output_size; i++) {
+                if (output_buffer[i] == 0) {
+                    output_buffer[i] = ' ';
+                }
+            }
+        out:
+#endif
+            /* Unlock the buffer on the ARM side.  */
+            unlock_user(output_buffer, ARG(0), output_size);
+
+            return status;
+        }
+        /* Never reached.  */
     case SYS_HEAPINFO:
         {
             uint32_t *ptr;
@@ -441,15 +472,16 @@ uint32_t do_arm_semihosting(CPUState *env)
             /* Some C libraries assume the heap immediately follows .bss, so
                allocate it using sbrk.  */
             if (!ts->heap_limit) {
-                long ret;
+                abi_ulong ret;
 
                 ts->heap_base = do_brk(0);
                 limit = ts->heap_base + ARM_ANGEL_HEAP_SIZE;
                 /* Try a big heap, and reduce the size if that fails.  */
                 for (;;) {
                     ret = do_brk(limit);
-                    if (ret != -1)
+                    if (ret >= limit) {
                         break;
+                    }
                     limit = (ts->heap_base >> 1) + (limit >> 1);
                 }
                 ts->heap_limit = limit;
@@ -478,8 +510,11 @@ uint32_t do_arm_semihosting(CPUState *env)
             return 0;
         }
     case SYS_EXIT:
-        gdb_exit(env, 0);
-        exit(0);
+        if (!exit_addr) {
+            fprintf(stderr, "qemu: Unknown exit code\n");
+        }
+        gdb_exit(env, exit_code);
+        exit(exit_code);
     default:
         fprintf(stderr, "qemu: Unsupported SemiHosting SWI 0x%02x\n", nr);
         cpu_dump_state(env, stderr, fprintf, 0);

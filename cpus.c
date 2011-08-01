@@ -290,6 +290,7 @@ void resume_all_vcpus(void)
 
 void pause_all_vcpus(void)
 {
+    show_all_ifetch_counters();
     tcg_plugin_cpus_stopped();
 }
 
@@ -785,6 +786,7 @@ void pause_all_vcpus(void)
         }
     }
 
+    show_all_ifetch_counters();
     tcg_plugin_cpus_stopped();
 }
 
