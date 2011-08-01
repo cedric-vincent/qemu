@@ -62,9 +62,7 @@ static void tb_helper_data(TCGPluginInterface *tpi, CPUState *env,
 
     hash_entry = g_hash_table_lookup(hash, symbol);
     if (!hash_entry) {
-        hash_entry = g_new(HashEntry, 1);
-        hash_entry->size   = tb->size;
-        hash_entry->icount = tb->icount;
+        hash_entry = g_new0(HashEntry, 1);
         g_hash_table_insert(hash, g_strdup(symbol), hash_entry);
     }
 
