@@ -54,7 +54,7 @@ static void tb_helper_data(TCGPluginInterface *tpi, CPUState *env,
 
 void tpi_init(TCGPluginInterface *tpi)
 {
-    TPI_INIT_VERSION_GENERIC(*tpi);
+    TPI_INIT_VERSION(*tpi);
     tpi->tb_helper_func = tb_helper_func;
     tpi->tb_helper_data = tb_helper_data;
 }
