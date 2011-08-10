@@ -288,7 +288,7 @@ void tcg_plugin_cpus_stopped(void)
 /* Hook called before the Intermediate Code Generation (ICG).  */
 void tcg_plugin_before_icg(CPUState *env, TranslationBlock *tb)
 {
-    if (tb->pc < tpi.low_pc && tb->pc >= tpi.high_pc) {
+    if (tb->pc < tpi.low_pc || tb->pc >= tpi.high_pc) {
         return;
     }
 
@@ -304,7 +304,7 @@ void tcg_plugin_before_icg(CPUState *env, TranslationBlock *tb)
 /* Hook called after the Intermediate Code Generation (ICG).  */
 void tcg_plugin_after_icg(CPUState *env, TranslationBlock *tb)
 {
-    if (tb->pc < tpi.low_pc && tb->pc >= tpi.high_pc) {
+    if (tb->pc < tpi.low_pc || tb->pc >= tpi.high_pc) {
         return;
     }
 
