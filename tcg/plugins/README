@@ -45,10 +45,10 @@ trace
     segmentation fault occurred::
 
         [...]
-        CPU #0 - 0x00008270 [32]: 8 instruction(s) in 'main'
-        CPU #0 - 0x00008230 [48]: 12 instruction(s) in 'test'
-        CPU #0 - 0x00010ac0 [12]: 3 instruction(s) in 'memcpy'
-        CPU #0 - 0x00010b54 [32]: 8 instruction(s) in 'memcpy'
+        CPU #0 - 0x00008270 [32]: 8 instruction(s) in '/tmp/a.out:main'
+        CPU #0 - 0x00008230 [48]: 12 instruction(s) in '/tmp/a.out:test'
+        CPU #0 - 0x00010ac0 [12]: 3 instruction(s) in '/lib/ld-2.10.1.so:memcpy'
+        CPU #0 - 0x00010b54 [32]: 8 instruction(s) in '/lib/ld-2.10.1.so:memcpy'
         Segmentation fault
 
         $ addr2line -e a.out 0x00008230
@@ -62,11 +62,11 @@ profile
     Count the number of executed *guest* bytes/instructions per symbol
     and produce a profile report each time CPUs are stopped::
 
-        SYMBOL                       | #BYTES | #INSTR
-        -----------------------------------------------
-        test                         |     48 |     12
-        memcpy                       |    168 |     42
-        main                         |     32 |      8
+        SYMBOL       | FILENAME            | #BYTES | #INSTR
+        ----------------------------------------------------
+        test         | /tmp/a.out          |     48 |     12
+        memcpy       | /lib/ld-2.10.1.so   |    168 |     42
+        main         | /tmp/a.out          |     32 |      8
         [...]
 
 dineroIV

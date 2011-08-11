@@ -36,20 +36,27 @@ static void tb_helper_func(TCGPluginInterface *tpi, uint64_t address,
                            TPIHelperInfo info, uint64_t data1, uint64_t data2)
 {
     const char *symbol = (const char *)(uintptr_t)data1;
+    const char *filename = (const char *)(uintptr_t)data2;
 
     if (!info.icount)
         return;
 
-    fprintf(tpi->output, "CPU #%" PRIu32 " - 0x%016" PRIx64 " [%" PRIu32 "]: %" PRIu32 " instruction(s) in '%s'\n",
-            info.cpu_index, address, info.size, info.icount, symbol[0] != '\0' ? symbol : "unknown");
+    fprintf(tpi->output, "CPU #%" PRIu32 " - 0x%016" PRIx64 " [%" PRIu32 "]: %" PRIu32 " instruction(s) in '%s:%s'\n",
+            info.cpu_index, address, info.size, info.icount,
+            filename[0] != '\0' ? filename : "<unknown>",
+            symbol[0] != '\0' ? symbol : "<unknown>");
 }
 
 static void tb_helper_data(TCGPluginInterface *tpi, CPUState *env,
                            TranslationBlock *tb, uint64_t *data1,
                            uint64_t *data2)
 {
-    const char *symbol = lookup_symbol(tb->pc);
+    const char *symbol;
+    const char *filename;
+
+    lookup_symbol2(tb->pc, &symbol, &filename);
     *data1 = (uintptr_t)symbol;
+    *data2 = (uintptr_t)filename;
 }
 
 void tpi_init(TCGPluginInterface *tpi)

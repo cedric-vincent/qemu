@@ -13,6 +13,7 @@ void monitor_disas(Monitor *mon, CPUState *env,
 
 /* Look up symbol for debugging purpose.  Returns "" if unknown. */
 const char *lookup_symbol(target_ulong orig_addr);
+bool lookup_symbol2(target_ulong orig_addr, const char **symbol, const char **filename);
 #endif
 
 struct syminfo;
@@ -33,6 +34,7 @@ struct syminfo {
       struct elf64_sym *elf64;
     } disas_symtab;
     const char *disas_strtab;
+    const char *filename;
     struct syminfo *next;
 };
 

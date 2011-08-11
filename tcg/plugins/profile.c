@@ -38,35 +38,44 @@
 static GHashTable *hash;
 
 typedef struct {
+    const char *symbol;
+    const char *filename;
+} HashKey;
+
+typedef struct {
     uint64_t size;
     uint64_t icount;
-} HashEntry;
+} HashValue;
 
 static void tb_helper_func(TCGPluginInterface *tpi, uint64_t address,
                            TPIHelperInfo info, uint64_t data1, uint64_t data2)
 {
-    HashEntry *hash_entry = (HashEntry *)(uintptr_t)data1;
-    hash_entry->size   += info.size;
-    hash_entry->icount += info.icount;
+    HashValue *hash_value = (HashValue *)(uintptr_t)data1;
+    hash_value->size   += info.size;
+    hash_value->icount += info.icount;
 }
 
 static void tb_helper_data(TCGPluginInterface *tpi, CPUState *env,
                            TranslationBlock *tb, uint64_t *data1,
                            uint64_t *data2)
 {
-    const char *symbol = lookup_symbol(tb->pc);
-    HashEntry *hash_entry;
+    HashKey hash_key;
+    HashValue *hash_value;
 
-    if (symbol[0] == '\0')
-        symbol = "/unknown";
+    lookup_symbol2(tb->pc, &hash_key.symbol, &hash_key.filename);
 
-    hash_entry = g_hash_table_lookup(hash, symbol);
-    if (!hash_entry) {
-        hash_entry = g_new0(HashEntry, 1);
-        g_hash_table_insert(hash, g_strdup(symbol), hash_entry);
+    if (hash_key.symbol[0] == '\0') {
+        hash_key.symbol = "<unknown>";
+        hash_key.filename = "<unknown>";
     }
 
-    *data1 = (uintptr_t)hash_entry;
+    hash_value = g_hash_table_lookup(hash, &hash_key);
+    if (!hash_value) {
+        hash_value = g_new0(HashValue, 1);
+        g_hash_table_insert(hash, g_memdup(&hash_key, sizeof(hash_key)), hash_value);
+    }
+
+    *data1 = (uintptr_t)hash_value;
 }
 
 /**********************************************************************
@@ -74,9 +83,10 @@ static void tb_helper_data(TCGPluginInterface *tpi, CPUState *env,
  */
 
 static size_t symbol_length   = 0;
+static size_t filename_length = 0;
 static size_t nb_bytes_length = 0;
 static size_t nb_instr_length = 0;
-static char format[1024] = "%-30s: %10" PRIu64 " %10" PRIu64 "\n";
+static char format[1024] = "";
 
 static unsigned int ilog10(uint64_t value)
 {
@@ -85,16 +95,17 @@ static unsigned int ilog10(uint64_t value)
     return result;
 }
 
-static void compute_entry_length(gchar *symbol, HashEntry *hash_entry)
+static void compute_entry_length(const HashKey *hash_key, const HashValue *hash_value)
 {
-    symbol_length   = MAX(symbol_length, strlen(symbol));
-    nb_bytes_length = MAX(nb_bytes_length, ilog10(hash_entry->size));
-    nb_instr_length = MAX(nb_instr_length, ilog10(hash_entry->icount));
+    symbol_length   = MAX(symbol_length, strlen(hash_key->symbol));
+    filename_length = MAX(filename_length, strlen(hash_key->filename));
+    nb_bytes_length = MAX(nb_bytes_length, ilog10(hash_value->size));
+    nb_instr_length = MAX(nb_instr_length, ilog10(hash_value->icount));
 }
 
-static void print_entry(gchar *symbol, HashEntry *hash_entry, FILE *output)
+static void print_entry(const HashKey *hash_key, const HashValue *hash_value, FILE *output)
 {
-    fprintf(output, format, symbol, hash_entry->size, hash_entry->icount);
+    fprintf(output, format, hash_key->symbol, hash_key->filename, hash_value->size, hash_value->icount);
 }
 
 static void cpus_stopped(TCGPluginInterface *tpi)
@@ -102,22 +113,40 @@ static void cpus_stopped(TCGPluginInterface *tpi)
     size_t line_length = 0;
 
     symbol_length   = strlen("SYMBOL");
+    filename_length = strlen("FILENAME");
     nb_bytes_length = strlen("#BYTES");
     nb_instr_length = strlen("#INSTR");
     g_hash_table_foreach(hash, (GHFunc)compute_entry_length, NULL);
 
-    snprintf(format, sizeof(format), "%%-%zus | %%%zus | %%%zus\n",
-             symbol_length, nb_bytes_length, nb_instr_length);
-    fprintf(tpi->output, format, "SYMBOL", "#BYTES", "#INSTR");
+    snprintf(format, sizeof(format), "%%-%zus | %%-%zus | %%%zus | %%%zus\n",
+             symbol_length, filename_length, nb_bytes_length, nb_instr_length);
+    fprintf(tpi->output, format, "SYMBOL", "FILENAME", "#BYTES", "#INSTR");
 
-    line_length = symbol_length + 3 + nb_bytes_length + 3 + nb_instr_length;
+    line_length = filename_length + 3 + symbol_length + 3 + nb_bytes_length + 3 + nb_instr_length;
     do { fprintf(tpi->output, "-"); } while (line_length--);
     fprintf(tpi->output, "\n");
 
-    snprintf(format, sizeof(format), "%%-%zus | %%%zu" PRIu64 " | %%%zu" PRIu64 "\n",
-             symbol_length, nb_bytes_length, nb_instr_length);
+    snprintf(format, sizeof(format), "%%-%zus | %%-%zus | %%%zu" PRIu64 " | %%%zu" PRIu64 "\n",
+             symbol_length, filename_length, nb_bytes_length, nb_instr_length);
 
     g_hash_table_foreach(hash, (GHFunc)print_entry, tpi->output);
+}
+
+/**********************************************************************
+ * Hash helpers.
+ */
+
+static guint hash_func(gconstpointer a)
+{
+    const HashKey *key = a;
+    return g_str_hash(key->symbol) + g_str_hash(key->filename);
+}
+
+static gboolean key_equal_func(gconstpointer a, gconstpointer b)
+{
+    const HashKey *key1 = a;
+    const HashKey *key2 = b;
+    return g_str_equal(key1->symbol, key2->symbol) + g_str_equal(key1->filename, key2->filename);
 }
 
 /**********************************************************************/
@@ -130,5 +159,5 @@ void tpi_init(TCGPluginInterface *tpi)
     tpi->tb_helper_data = tb_helper_data;
     tpi->cpus_stopped = cpus_stopped;
 
-    hash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    hash = g_hash_table_new_full(hash_func, key_equal_func, g_free, g_free);
 }
