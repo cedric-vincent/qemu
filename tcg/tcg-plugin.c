@@ -327,8 +327,15 @@ void tcg_plugin_after_icg(CPUState *env, TranslationBlock *tb)
 #endif
 
         if (tpi.tb_helper_data) {
-            uint64_t data1;
-            uint64_t data2;
+            uint64_t data1 = 0;
+            uint64_t data2 = 0;
+
+            /* FIXME: qemu-sh4 crashes when built on Ubuntu 10.04.1
+             * x86_64 (not on Slackware64-13.37) if some bits of data2
+             * aren't initialized, either here or in the plugin.  This
+             * is really unexpected since data2 should be read by the
+             * plugin only!
+             */
 
             tpi.tb_helper_data(&tpi, env, tb, &data1, &data2);
 
