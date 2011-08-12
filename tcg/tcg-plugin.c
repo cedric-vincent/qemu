@@ -27,7 +27,7 @@
 #include <stdbool.h> /* bool, true, false, */
 #include <assert.h>  /* assert(3), */
 #include <dlfcn.h>   /* dlopen(3), dlsym(3), */
-#include <unistd.h>  /* access(2), STDERR_FILENO, */
+#include <unistd.h>  /* access(2), STDERR_FILENO, getpid(2), */
 #include <fcntl.h>   /* open(2), */
 #include <stdlib.h>  /* getenv(3), */
 #include <string.h>  /* strlen(3), */
@@ -107,9 +107,11 @@ void tcg_plugin_load(const char *name)
 
     tpi.output = NULL;
     if (getenv("TPI_OUTPUT")) {
-        tpi.output = fopen(getenv("TPI_OUTPUT"), "w+");
+        char path[PATH_MAX];
+        snprintf(path, PATH_MAX, "%s.%d", getenv("TPI_OUTPUT"), getpid());
+        tpi.output = fopen(path, "w");
         if (!tpi.output) {
-            perror("plugin: warning: can't open %s (fall back to stderr)");
+            perror("plugin: warning: can't open TPI_OUTPUT.$PID (fall back to stderr)");
         }
         /* This is a compromise between buffered output and truncated
          * output when exiting through _exit(2) in user-mode.  */

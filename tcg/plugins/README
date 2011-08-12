@@ -126,9 +126,9 @@ behaviors (see `Generic Plugin`_ for explanation)::
 All plugins share a common set of options passed through environment
 variables:
 
-TPI_OUTPUT=filename
-    Specify the filename where the plugin writes information, this IO
-    stream is line-buffered unless the default output is used
+TPI_OUTPUT=file
+    Specify where the plugin writes information: ``file``.``$PID``,
+    this IO stream is line-buffered unless the default output is used
     (``stderr``).
 
 TPI_VERBOSE
