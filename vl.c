@@ -2813,8 +2813,10 @@ int main(int argc, char **argv, char **envp)
     }
 
 #ifdef CONFIG_TCG_PLUGIN
-    if (plugin_filename)
+    plugin_filename = plugin_filename ?: getenv("TCG_PLUGIN");
+    if (plugin_filename) {
         tcg_plugin_load(plugin_filename);
+    }
 #endif /* CONFIG_TCG_PLUGIN */
 
     qemu_opts_foreach(qemu_find_opts("device"), default_driver_check, NULL, 0);

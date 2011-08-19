@@ -2732,6 +2732,9 @@ int main(int argc, char **argv, char **envp)
     int i;
     int ret;
     int log_mask = 0;
+#ifdef CONFIG_TCG_PLUGIN
+    const char *plugin_filename = NULL;
+#endif
 
     if (argc <= 1)
         usage();
@@ -2855,7 +2858,7 @@ int main(int argc, char **argv, char **envp)
             clock_ifetch = convert_string_to_frequency(argv[optind++]);
 #ifdef CONFIG_TCG_PLUGIN
         } else if (!strcmp(r, "tcg-plugin")) {
-            tcg_plugin_load(argv[optind++]);
+            plugin_filename = argv[optind++];
 #endif /* CONFIG_TCG_PLUGIN */
 #if defined(CONFIG_USE_GUEST_BASE)
         } else if (!strcmp(r, "B")) {
@@ -2910,6 +2913,13 @@ int main(int argc, char **argv, char **envp)
         usage();
     filename = argv[optind];
     exec_path = argv[optind];
+
+#ifdef CONFIG_TCG_PLUGIN
+    plugin_filename = plugin_filename ?: getenv("TCG_PLUGIN");
+    if (plugin_filename) {
+        tcg_plugin_load(plugin_filename);
+    }
+#endif /* CONFIG_TCG_PLUGIN */
 
     /* init debug */
     if (log_mask) {
