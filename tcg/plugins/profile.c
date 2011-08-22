@@ -47,22 +47,23 @@ typedef struct {
     uint64_t icount;
 } HashValue;
 
-static void tb_helper_func(TCGPluginInterface *tpi, uint64_t address,
-                           TPIHelperInfo info, uint64_t data1, uint64_t data2)
+static void tb_helper_code(const TCGPluginInterface *tpi,
+                           TPIHelperInfo info, uint64_t address,
+                           uint64_t data1, uint64_t data2)
 {
     HashValue *hash_value = (HashValue *)(uintptr_t)data1;
     hash_value->size   += info.size;
     hash_value->icount += info.icount;
 }
 
-static void tb_helper_data(TCGPluginInterface *tpi, CPUState *env,
-                           TranslationBlock *tb, uint64_t *data1,
-                           uint64_t *data2)
+static void tb_helper_data(const TCGPluginInterface *tpi,
+                           TPIHelperInfo info, uint64_t address,
+                           uint64_t *data1, uint64_t *data2)
 {
     HashKey hash_key;
     HashValue *hash_value;
 
-    lookup_symbol2(tb->pc, &hash_key.symbol, &hash_key.filename);
+    lookup_symbol2(address, &hash_key.symbol, &hash_key.filename);
 
     if (hash_key.symbol[0] == '\0') {
         hash_key.symbol = "<unknown>";
@@ -108,7 +109,7 @@ static void print_entry(const HashKey *hash_key, const HashValue *hash_value, FI
     fprintf(output, format, hash_key->symbol, hash_key->filename, hash_value->size, hash_value->icount);
 }
 
-static void cpus_stopped(TCGPluginInterface *tpi)
+static void cpus_stopped(const TCGPluginInterface *tpi)
 {
     size_t line_length = 0;
 
@@ -153,9 +154,9 @@ static gboolean key_equal_func(gconstpointer a, gconstpointer b)
 
 void tpi_init(TCGPluginInterface *tpi)
 {
-    TPI_INIT_VERSION(*tpi);
+    TPI_INIT_VERSION_GENERIC(*tpi);
 
-    tpi->tb_helper_func = tb_helper_func;
+    tpi->tb_helper_code = tb_helper_code;
     tpi->tb_helper_data = tb_helper_data;
     tpi->cpus_stopped = cpus_stopped;
 

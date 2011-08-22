@@ -30,10 +30,10 @@ icount
         Number of executed instructions on CPU #1 = 36475675
 
 icount-inlined
-    Same as the above but this plugin is *not* based on a helper,
-    instead it inserts TCG opcodes inlined right at the beginning of
-    each basic block, see `How to Write TCG Plugins?`_ for details.
-    This method is quite faster [#]_ but the current implementation is
+    Same as above but this plugin is *not* based on a helper, instead
+    it inserts TCG opcodes inlined right at the beginning of each
+    basic block, see `How to Write TCG Plugins?`_ for details.  This
+    method is quite faster [#]_ but the current implementation is
     *not* thread-safe.
 
 .. [#] Christophe GUILLON: Program Instrumentation with QEMU.  In 1st
@@ -194,12 +194,18 @@ TCG Plugins?`_::
         FILE *output;
         uint64_t low_pc;
         uint64_t high_pc;
+        bool verbose;
+
+        /* Parameters for non-generic plugins.  */
+        bool is_generic;
+        const CPUState *env;
+        const TranslationBlock *tb;
 
         /* Plugin's callbacks.  */
         tpi_cpus_stopped_t cpus_stopped;
         tpi_before_icg_t   before_icg;
         tpi_after_icg_t    after_icg;
-        tpi_tb_helper_func_t tb_helper_func;
+        tpi_tb_helper_code_t tb_helper_code;
         tpi_tb_helper_data_t tb_helper_data;
     };
 
@@ -218,7 +224,7 @@ initialization failure to QEMU::
 Then, this function is used to declare each callback implemented by
 the plugin, see next section for details.  Here is an example::
 
-    tpi->tb_helper_func = tb_helper_func;
+    tpi->tb_helper_code = tb_helper_code;
     tpi->cpus_stopped = cpus_stopped;
 
 
@@ -240,20 +246,18 @@ This function is called when all emulated CPUs are stopped (on exit,
 reboot, ...) and is mainly used to print analysis reports.  Its
 declaration is::
 
-    void cpus_stopped(TCGPluginInterface *tpi)
+    void cpus_stopped(const TCGPluginInterface *tpi)
 
 
-tb_helper_func
+tb_helper_code
 ``````````````
 
 This function is called each time a translated basic block is executed
 and is mainly used to collect analysis data.  Its declaration is::
 
-    void tb_helper_func(TCGPluginInterface *tpi,
-                        uint64_t address,
-                        TPIHelperInfo info,
-                        uint64_t data1,
-                        uint64_t data2)
+    void tb_helper_code(const TCGPluginInterface *tpi,
+                        TPIHelperInfo info, uint64_t address,
+                        uint64_t data1, uint64_t data2)
 
 When QEMU calls this function, a mutex is used to avoid than more one
 thread executes it at the same time.  That means the resources only
@@ -283,21 +287,21 @@ tb_helper_data
 
 This function is called each time a basic block *was* translated
 (**not executed**) and is mainly used to define the parameters passed
-to ``tb_helper_func()``.  Its declaration is::
+to ``tb_helper_code()``.  Its declaration is::
 
-    void tb_helper_data(TCGPluginInterface *tpi,
-                        CPUState *env,
-                        TranslationBlock *tb,
-                        uint64_t *data1,
-                        uint64_t *data2)
+    void tb_helper_data(const TCGPluginInterface *tpi,
+                        TPIHelperInfo info, uint64_t address,
+                        uint64_t *data1, uint64_t *data2)
 
-The pointers ``data1`` and ``data2`` reference the eponymous
-parameters of ``tb_helper_func()`` for the given translated block.
-Note that they are defined at translation-time, that is, they can't be
-changed later on.  See `Two Kinds of Flow`_ for explanation.
-Technically ``data1`` and ``data2`` can hold anything and are
-particularly useful to optimize the execution of the
-``tb_helper_func()`` as described in section `Optimization`_.
+The parameter ``info`` is the same as above and the pointers ``data1``
+and ``data2`` reference the eponymous parameters of
+``tb_helper_code()`` for the given translated block.  Note that they
+are defined at translation-time, that is, they can't be changed later
+on.  See `Two Kinds of Flow`_ for explanation.  Technically ``data1``
+and ``data2`` can hold anything and are particularly useful to
+optimize the execution of the ``tb_helper_code()`` as described in
+section `Optimization`_.
+
 
 before_icg
 ``````````
@@ -306,9 +310,7 @@ This function is called before a basic block is translated from
 *guest* instructions to TCG opcodes, and it is mainly used to insert
 TCG opcodes or calls to helpers.  Its declaration is::
 
-    void before_icg(TCGPluginInterface *tpi,
-                    CPUState *env,
-                    TranslationBlock *tb)
+    void before_icg(const TCGPluginInterface *tpi)
 
 
 after_icg
@@ -320,10 +322,7 @@ of variables that were undefined when ``before_icg()`` was called,
 this is typically the case for ``tb->size`` and ``tb->icount``.  Its
 declaration is::
 
-    void before_icg(TCGPluginInterface *tpi,
-                    CPUState *env,
-                    TranslationBlock *tb)
-
+    void after_icg(const TCGPluginInterface *tpi)
 
 
 Two Kinds of Flow
@@ -392,21 +391,21 @@ Let's take the example below::
         i = 0
         goto block1
 
-The function ``tb_helper_func()`` is called each time the translated
+The function ``tb_helper_code()`` is called each time the translated
 version of ``block1`` and ``block2`` are executed.  The execution flow
 looks like this diagram::
 
                     +<-------------------+<--+
                     |                    |   |
     +--------------------------------+   |   |
-    | tb_helper_func() then the      |   |   |
+    | tb_helper_code() then the      |   |   |
     | translated block1 are executed |   |   |
     +--------------------------------+   |   |
                     |                    |   |
                     +------------------->+   |
                     |                        |
     +--------------------------------+       |
-    | tb_helper_func() then the      |       |
+    | tb_helper_code() then the      |       |
     | translated block2 are executed |       |
     +--------------------------------+       |
                     |                        |
@@ -425,18 +424,18 @@ or moved.  For instance, you can't access safely at execution-time [a
 field of] a ``TranslationBlock`` the way below since there's a chance
 that sooner or later the pointer ``tb`` will be freed::
 
-    before_icg(TranslationBlock *tb)
+    ... before_icg(...)
     {
-        ptr = tcg_const_ptr(tb);
+        ptr = tcg_const_ptr(tpi->tb);
         // generate TCG opcodes that use
-	// "((TranslationBlock *)ptr)->pc"
+	// "((TranslationBlock *)ptr)->flags"
     }
 
 Instead, you have to **copy** the needed field(s)::
 
-    before_icg(TranslationBlock *tb)
+    ... before_icg(...)
     {
-        TCGv_i64 pc = tcg_const_i64((uint64_t)tb->pc);
+        TCGv_i64 pc = tcg_const_i64(tpi->tb->flags);
     }
 
 
@@ -445,28 +444,28 @@ Optimization
 
 It's worth saying the more analysis is done at translation-time, the
 less analysis is done at execution-time.  For instance, you can call
-``lookup_symbol(pc)`` in ``tb_helper_func()`` to get the name of the
+``lookup_symbol(pc)`` in ``tb_helper_code()`` to get the name of the
 function currently executed, but it will be called each time the given
 block is executed::
 
-    tb_helper_func(TranslationBlock *tb)
+    ... tb_helper_code(...)
     {
-        const char *symbol = lookup_symbol(tb->pc);
+        const char *symbol = lookup_symbol(address);
     }
 
 Since the matching ``pc/symbol`` never changes, it's cheaper to call
 ``lookup_symbol(pc)`` in ``tb_helper_data()`` -- thus once per basic
 block translation -- to store the result in ``data1`` and then use
-this pointer directly in ``tb_helper_func()``::
+this pointer directly in ``tb_helper_code()``::
 
-    tb_helper_func(uint64_t data1)
+    ... tb_helper_code(...)
     {
         const char *symbol = (const char *)data1;
     }
 
-    tb_helper_data(TranslationBlock *tb)
+    ... tb_helper_data(...)
     {
-        const char *symbol = lookup_symbol(tb->pc);
+        const char *symbol = lookup_symbol(address);
         *data1 = (uint64_t)symbol;
     }
 
@@ -491,13 +490,14 @@ Generic Plugin
 ``````````````
 
 A plugin is considered to be *generic* -- and thus can use the macro
-TPI_INIT_VERSION_GENERIC() -- if it never accesses a
-``TranslationBlock`` or a ``CPUState`` directly because these
-structures are different from one CPU and/or mode to another, unlike
-``TPIHelperInfo``.  For instance the plugins ``icount`` and
-``icount-inlined`` basically do the same thing but this latter isn't
-generic because it can't be used with a version of QEMU built for
-another CPU and/or mode.
+TPI_INIT_VERSION_GENERIC() -- if it doesn't perform access to
+``tpi->env`` of ``tpi->tb`` since these structures are different from
+one CPU and/or mode to another, unlike ``TPIHelperInfo``.  Actually
+when a plugin declares itself as generic, these two fields are always
+``NULL`` to avoid any mistake.  For instance the plugins ``icount``
+and ``icount-inlined`` basically do the same thing but this latter
+isn't generic because it can't be used with a version of QEMU built
+for another CPU and/or mode.
 
 
 Custom Helper
@@ -529,16 +529,16 @@ source::
 Now you can *insert* a call to this helper in the prologue of any
 translated block::
 
-    before_icg(TranslationBlock *tb)
+    ... before_icg(...)
     {
-        TCGv_i64 pc = tcg_const_i64((uint64_t)tb->pc);
+        TCGv_i64 pc = tcg_const_i64((uint64_t)address);
         gen_helper_example(pc);
         tcg_temp_free_i64(pc);
     }
 
 Finally, you have to *declare* the helper to QEMU::
 
-    tpi_init()
+    ... tpi_init(...)
     {
         #define GEN_HELPER 2
         #include "example-helper.h"
@@ -578,8 +578,8 @@ explained in a previous section::
     #include "tcg-plugin.h"
     #include "disas.h"
 
-    static void tb_helper_func(TCGPluginInterface *tpi,
-                               uint64_t address, TPIHelperInfo info,
+    static void tb_helper_code(const TCGPluginInterface *tpi,
+                               TPIHelperInfo info, uint64_t address,
                                uint64_t data1, uint64_t data2)
     {
         const char *symbol = (const char *)(uintptr_t)data1;
@@ -588,17 +588,17 @@ explained in a previous section::
                 info.icount, symbol, address);
     }
 
-    static void tb_helper_data(TCGPluginInterface *tpi, CPUState *env,
-                               TranslationBlock *tb, uint64_t *data1,
-                               uint64_t *data2)
+    static void tb_helper_data(const TCGPluginInterface *tpi,
+                               TPIHelperInfo info, uint64_t address,
+                               uint64_t *data1, uint64_t *data2)
     {
-        const char *symbol = lookup_symbol(tb->pc);
+        const char *symbol = lookup_symbol(address);
         *data1 = (uintptr_t)symbol;
     }
 
     void tpi_init(TCGPluginInterface *tpi)
     {
         TPI_INIT_VERSION_GENERIC(*tpi);
-        tpi->tb_helper_func = tb_helper_func;
+        tpi->tb_helper_code = tb_helper_code;
         tpi->tb_helper_data = tb_helper_data;
     }

@@ -31,8 +31,9 @@
 
 #include "tcg-plugin.h"
 
-static void tb_helper_func(TCGPluginInterface *tpi, uint64_t address,
-                           TPIHelperInfo info, uint64_t data1, uint64_t data2)
+static void tb_helper_code(const TCGPluginInterface *tpi,
+                           TPIHelperInfo info, uint64_t address,
+                           uint64_t data1, uint64_t data2)
 {
     if (!info.size)
         return;
@@ -60,5 +61,5 @@ static void tb_helper_func(TCGPluginInterface *tpi, uint64_t address,
 void tpi_init(TCGPluginInterface *tpi)
 {
     TPI_INIT_VERSION_GENERIC(*tpi);
-    tpi->tb_helper_func = tb_helper_func;
+    tpi->tb_helper_code = tb_helper_code;
 }

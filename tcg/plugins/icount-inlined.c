@@ -35,7 +35,7 @@
 static TCGArg **icount_total_args;
 static uint64_t *icount_total;
 
-static void cpus_stopped(TCGPluginInterface *tpi)
+static void cpus_stopped(const TCGPluginInterface *tpi)
 {
     unsigned int i;
     for (i = 0; i < tpi->nb_cpus; i++) {
@@ -46,7 +46,7 @@ static void cpus_stopped(TCGPluginInterface *tpi)
 }
 
 /* This function generates code which is *not* thread-safe!  */
-static void before_icg(TCGPluginInterface *tpi, CPUState *env, TranslationBlock *tb)
+static void before_icg(const TCGPluginInterface *tpi)
 {
     TCGv_ptr icount_ptr;
     TCGv_i64 icount_tmp;
@@ -54,7 +54,7 @@ static void before_icg(TCGPluginInterface *tpi, CPUState *env, TranslationBlock 
     TCGv_i64 tb_icount64;
 
     /* icount_ptr = &icount */
-    icount_ptr = tcg_const_ptr((tcg_target_long)&icount_total[env->cpu_index]);
+    icount_ptr = tcg_const_ptr((tcg_target_long)&icount_total[tpi->env->cpu_index]);
 
     /* icount_tmp = *icount_ptr */
     icount_tmp = tcg_temp_new_i64();
@@ -62,7 +62,7 @@ static void before_icg(TCGPluginInterface *tpi, CPUState *env, TranslationBlock 
 
     /* icount_args = &tb_icount32 */
     /* tb_icount32 = fixup(tb->icount) */
-    icount_total_args[env->cpu_index] = gen_opparam_ptr + 1;
+    icount_total_args[tpi->env->cpu_index] = gen_opparam_ptr + 1;
     tb_icount32 = tcg_const_i32(0);
 
     /* tb_icount64 = (int64_t)tb_icount32 */
@@ -81,10 +81,10 @@ static void before_icg(TCGPluginInterface *tpi, CPUState *env, TranslationBlock 
     tcg_temp_free_ptr(icount_ptr);
 }
 
-static void after_icg(TCGPluginInterface *tpi, CPUState *env, TranslationBlock *tb)
+static void after_icg(const TCGPluginInterface *tpi)
 {
     /* Patch parameter value.  */
-    *icount_total_args[env->cpu_index] = tb->icount;
+    *icount_total_args[tpi->env->cpu_index] = tpi->tb->icount;
 }
 
 void tpi_init(TCGPluginInterface *tpi)

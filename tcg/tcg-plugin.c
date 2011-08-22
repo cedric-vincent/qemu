@@ -207,6 +207,8 @@ void tcg_plugin_load(const char *name)
                 "(%s != %s)\n", tpi.mode, EMULATION_MODE);
     }
 
+    tpi.is_generic = strcmp(tpi.guest, "any") == 0 && strcmp(tpi.mode, "any") == 0;
+
     if (getenv("TPI_VERBOSE")) {
         tpi.verbose = true;
         fprintf(tpi.output, "plugin: info: version = %d\n", tpi.version);
@@ -220,8 +222,9 @@ void tcg_plugin_load(const char *name)
         fprintf(tpi.output, "plugin: info: cpus_stopped callback = %p\n", tpi.cpus_stopped);
         fprintf(tpi.output, "plugin: info: before_icg callback = %p\n", tpi.before_icg);
         fprintf(tpi.output, "plugin: info: after_icg callback = %p\n", tpi.after_icg);
-        fprintf(tpi.output, "plugin: info: tb_helper_func callback = %p\n", tpi.tb_helper_func);
+        fprintf(tpi.output, "plugin: info: tb_helper_code callback = %p\n", tpi.tb_helper_code);
         fprintf(tpi.output, "plugin: info: tb_helper_data callback = %p\n", tpi.tb_helper_data);
+        fprintf(tpi.output, "plugin: info: is%s generic\n", tpi.is_generic ? "" : " not");
     }
 
     /* Register helper.  */
@@ -287,6 +290,18 @@ void tcg_plugin_cpus_stopped(void)
     }
 }
 
+/* Wrapper to ensure only non-generic plugins can access non-generic data.  */
+#define TPI_CALLBACK_NOT_GENERIC(callback, ...)         \
+    do {                                                \
+        if (!tpi.is_generic) {                          \
+            tpi.env = env;                              \
+            tpi.tb = tb;                                \
+        }                                               \
+        tpi.callback(&tpi, ##__VA_ARGS__);              \
+        tpi.env = NULL;                                 \
+        tpi.tb = NULL;                                  \
+    } while (0);
+
 /* Hook called before the Intermediate Code Generation (ICG).  */
 void tcg_plugin_before_icg(CPUState *env, TranslationBlock *tb)
 {
@@ -295,10 +310,10 @@ void tcg_plugin_before_icg(CPUState *env, TranslationBlock *tb)
     }
 
     if (tpi.before_icg) {
-        tpi.before_icg(&tpi, env, tb);
+        TPI_CALLBACK_NOT_GENERIC(before_icg);
     }
 
-    if (tpi.tb_helper_func) {
+    if (tpi.tb_helper_code) {
         gen_tb_helper(env, tb);
     }
 }
@@ -311,10 +326,10 @@ void tcg_plugin_after_icg(CPUState *env, TranslationBlock *tb)
     }
 
     if (tpi.after_icg) {
-        tpi.after_icg(&tpi, env, tb);
+        TPI_CALLBACK_NOT_GENERIC(after_icg);
     }
 
-    if (tpi.tb_helper_func) {
+    if (tpi.tb_helper_code) {
         /* Patch helper_tcg_plugin_tb*() parameters.  */
 
         ((TPIHelperInfo *)tb_info)->cpu_index = env->cpu_index;
@@ -327,9 +342,6 @@ void tcg_plugin_after_icg(CPUState *env, TranslationBlock *tb)
 #endif
 
         if (tpi.tb_helper_data) {
-            uint64_t data1 = 0;
-            uint64_t data2 = 0;
-
             /* FIXME: qemu-sh4 crashes when built on Ubuntu 10.04.1
              * x86_64 (not on Slackware64-13.37) if some bits of data2
              * aren't initialized, either here or in the plugin.  This
@@ -337,7 +349,10 @@ void tcg_plugin_after_icg(CPUState *env, TranslationBlock *tb)
              * plugin only!
              */
 
-            tpi.tb_helper_data(&tpi, env, tb, &data1, &data2);
+            uint64_t data1 = 0;
+            uint64_t data2 = 0;
+
+            TPI_CALLBACK_NOT_GENERIC(tb_helper_data, *(TPIHelperInfo *)tb_info, tb->pc, &data1, &data2);
 
 #if TCG_TARGET_REG_BITS == 64
             *(uint64_t *)tb_data1 = data1;
@@ -354,12 +369,12 @@ void tcg_plugin_after_icg(CPUState *env, TranslationBlock *tb)
     }
 }
 
-/* Real TCG helper used to call tb_helper_func() in a thread-safe
+/* Real TCG helper used to call tb_helper_code() in a thread-safe
  * way.  */
-static inline void call_tb_helper_func(uint64_t address, uint64_t info,
+static inline void call_tb_helper_code(uint64_t address, uint64_t info,
                                        uint64_t data1, uint64_t data2)
 {
-    /* Ensure resources only used by tb_helper_func are protected from
+    /* Ensure resources only used by tb_helper_code are protected from
        concurrent access.  */
     static pthread_mutex_t tb_helper_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -370,7 +385,7 @@ static inline void call_tb_helper_func(uint64_t address, uint64_t info,
         goto end;
     }
 
-    tpi.tb_helper_func(&tpi, address, *(TPIHelperInfo *)&info, data1, data2);
+    tpi.tb_helper_code(&tpi, *(TPIHelperInfo *)&info, address, data1, data2);
 
 end:
     pthread_mutex_unlock(&tb_helper_mutex);
@@ -378,11 +393,11 @@ end:
 
 void helper_tcg_plugin_tb(uint64_t address, uint64_t info)
 {
-    call_tb_helper_func(address, info, 0, 0);
+    call_tb_helper_code(address, info, 0, 0);
 }
 
 void helper_tcg_plugin_tb2(uint64_t address, uint64_t info,
                            uint64_t data1, uint64_t data2)
 {
-    call_tb_helper_func(address, info, data1, data2);
+    call_tb_helper_code(address, info, data1, data2);
 }

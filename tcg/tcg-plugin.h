@@ -49,7 +49,7 @@
  * TCG plugin interface.
  */
 
-/* This structure shall be 64 bits, see call_tb_helper_func() for
+/* This structure shall be 64 bits, see call_tb_helper_code() for
  * details.  */
 typedef struct
 {
@@ -61,23 +61,21 @@ typedef struct
 struct TCGPluginInterface;
 typedef struct TCGPluginInterface TCGPluginInterface;
 
-typedef void (* tpi_cpus_stopped_t)(TCGPluginInterface *tpi);
+typedef void (* tpi_cpus_stopped_t)(const TCGPluginInterface *tpi);
 
-typedef void (* tpi_before_icg_t)(TCGPluginInterface *tpi,
-                                  CPUState *env, TranslationBlock *tb);
+typedef void (* tpi_before_icg_t)(const TCGPluginInterface *tpi);
 
-typedef void (* tpi_after_icg_t)(TCGPluginInterface *tpi,
-                                 CPUState *env, TranslationBlock *tb);
+typedef void (* tpi_after_icg_t)(const TCGPluginInterface *tpi);
 
-typedef void (* tpi_tb_helper_func_t)(TCGPluginInterface *tpi,
-                                      uint64_t address, TPIHelperInfo info,
+typedef void (* tpi_tb_helper_code_t)(const TCGPluginInterface *tpi,
+                                      TPIHelperInfo info, uint64_t address,
                                       uint64_t data1, uint64_t data2);
 
-typedef void (* tpi_tb_helper_data_t)(TCGPluginInterface *tpi, CPUState *env,
-                                      TranslationBlock *tb, uint64_t *data1,
-                                      uint64_t *data2);
+typedef void (* tpi_tb_helper_data_t)(const TCGPluginInterface *tpi,
+                                      TPIHelperInfo info, uint64_t address,
+                                      uint64_t *data1, uint64_t *data2);
 
-#define TPI_VERSION 1
+#define TPI_VERSION 2
 struct TCGPluginInterface
 {
     /* Compatibility information.  */
@@ -94,11 +92,16 @@ struct TCGPluginInterface
     uint64_t high_pc;
     bool verbose;
 
+    /* Parameters for non-generic plugins.  */
+    bool is_generic;
+    const CPUState *env;
+    const TranslationBlock *tb;
+
     /* Plugin's callbacks.  */
     tpi_cpus_stopped_t cpus_stopped;
     tpi_before_icg_t   before_icg;
     tpi_after_icg_t    after_icg;
-    tpi_tb_helper_func_t tb_helper_func;
+    tpi_tb_helper_code_t tb_helper_code;
     tpi_tb_helper_data_t tb_helper_data;
 };
 
