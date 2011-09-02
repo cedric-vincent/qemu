@@ -16,6 +16,7 @@ libdis*
 libhw32
 libhw64
 libuser
+qapi-generated
 qemu-doc.html
 qemu-tech.html
 qemu-doc.info
@@ -33,6 +34,7 @@ qemu-options.texi
 qemu-img-cmds.texi
 qemu-img-cmds.h
 qemu-io
+qemu-ga
 qemu-monitor.texi
 QMP/qmp-commands.txt
 .gdbinit
@@ -45,6 +47,9 @@ QMP/qmp-commands.txt
 *.ky
 *.log
 *.pdf
+*.cps
+*.fns
+*.kys
 *.pg
 *.pyc
 *.toc
@@ -52,6 +57,8 @@ QMP/qmp-commands.txt
 *.vr
 *.d
 *.o
+*.swp
+*.orig
 .pc
 patches
 pc-bios/bios-pq/status
@@ -61,3 +68,6 @@ pc-bios/optionrom/multiboot.bin
 pc-bios/optionrom/multiboot.raw
 .stgit-*
 cscope.*
+tags
+TAGS
+*~

@@ -34,7 +34,6 @@
 #define ARM_ANGEL_HEAP_SIZE (128 * 1024 * 1024)
 #else
 #include "qemu-common.h"
-#include "sysemu.h"
 #include "gdbstub.h"
 #include "hw/arm-misc.h"
 #endif
@@ -381,20 +380,21 @@ uint32_t do_arm_semihosting(CPUState *env)
         return syscall_err;
 #endif
     case SYS_GET_CMDLINE:
-        /* Build a command-line from the original argv.
-         *
-         * The inputs are:
-         *     * ARG(0), pointer to a buffer of at least the size
-         *               specified in ARG(1).
-         *     * ARG(1), size of the buffer pointed to by ARG(0) in
-         *               bytes.
-         *
-         * The outputs are:
-         *     * ARG(0), pointer to null-terminated string of the
-         *               command line.
-         *     * ARG(1), length of the string pointed to by ARG(0).
-         */
         {
+            /* Build a command-line from the original argv.
+             *
+             * The inputs are:
+             *     * ARG(0), pointer to a buffer of at least the size
+             *               specified in ARG(1).
+             *     * ARG(1), size of the buffer pointed to by ARG(0) in
+             *               bytes.
+             *
+             * The outputs are:
+             *     * ARG(0), pointer to null-terminated string of the
+             *               command line.
+             *     * ARG(1), length of the string pointed to by ARG(0).
+             */
+
             char *output_buffer;
             size_t input_size = ARG(1);
             size_t output_size;
@@ -417,7 +417,7 @@ uint32_t do_arm_semihosting(CPUState *env)
             }
 #endif
 
-            if (!input_size || output_size > input_size) {
+            if (output_size > input_size) {
                  /* Not enough space to store command-line arguments.  */
                 return -1;
             }
@@ -450,7 +450,7 @@ uint32_t do_arm_semihosting(CPUState *env)
             }
 
             /* Separate arguments by white spaces.  */
-            for (i = 0; i < output_size; i++) {
+            for (i = 0; i < output_size - 1; i++) {
                 if (output_buffer[i] == 0) {
                     output_buffer[i] = ' ';
                 }
@@ -462,7 +462,6 @@ uint32_t do_arm_semihosting(CPUState *env)
 
             return status;
         }
-        /* Never reached.  */
     case SYS_HEAPINFO:
         {
             uint32_t *ptr;

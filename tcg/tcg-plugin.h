@@ -27,6 +27,7 @@
 #ifndef TCG_PLUGIN_H
 #define TCG_PLUGIN_H
 
+#include "qemu-common.h"
 #include "exec-all.h"
 
 /***********************************************************************
