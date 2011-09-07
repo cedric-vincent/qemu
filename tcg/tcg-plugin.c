@@ -113,12 +113,13 @@ void tcg_plugin_load(const char *name)
         if (!tpi.output) {
             perror("plugin: warning: can't open TPI_OUTPUT.$PID (fall back to stderr)");
         }
-        /* This is a compromise between buffered output and truncated
-         * output when exiting through _exit(2) in user-mode.  */
-        setlinebuf(tpi.output);
     }
     if (!tpi.output)
         tpi.output = stderr;
+
+    /* This is a compromise between buffered output and truncated
+     * output when exiting through _exit(2) in user-mode.  */
+    setlinebuf(tpi.output);
 
     tpi.low_pc = 0;
     tpi.high_pc = UINT64_MAX;
