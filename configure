@@ -576,7 +576,7 @@ for opt do
   ;;
   --enable-tcg-plugin) tcg_plugin="yes"
   ;;
-  --disable-plugin) tcg_plugin="no"
+  --disable-tcg-plugin) tcg_plugin="no"
   ;;
   --enable-debug-tcg) debug_tcg="yes"
   ;;

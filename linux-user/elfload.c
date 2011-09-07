@@ -1003,7 +1003,6 @@ static inline void bswap_sym(struct elf_sym *sym) { }
 #ifdef USE_ELF_CORE_DUMP
 static int elf_core_dump(int, const CPUState *);
 #endif /* USE_ELF_CORE_DUMP */
-static void load_symbols(struct elfhdr *hdr, int fd, abi_ulong load_bias);
 
 /* Verify the portions of EHDR within E_IDENT for the target.
    This can be performed before bswapping the entire header.  */
@@ -1585,19 +1584,6 @@ static void load_elf_image(const char *image_name, int image_fd,
         info->brk = info->end_code;
     }
 
-#if defined(TARGET_ARM) || defined(CONFIG_TCG_PLUGIN)
-    /* Load the program's symbol table for TCG plugins.  */
-    if (qemu_log_enabled() || pinterp_name) {
-#else
-    if (qemu_log_enabled()) {
-#endif
-        load_symbols(ehdr, image_fd, load_bias);
-    }
-
-#if defined(TARGET_ARM)
-    exit_addr = find_symbol("exit", ehdr->e_ident[EI_CLASS] == ELFCLASS64);
-#endif
-
     close(image_fd);
     return;
 
@@ -1685,7 +1671,7 @@ static int symcmp(const void *s0, const void *s1)
 }
 
 /* Best attempt to load symbols from this ELF object. */
-static void load_symbols(struct elfhdr *hdr, int fd, abi_ulong load_bias)
+static void load_symbols(struct elfhdr *hdr, int fd, const char *filename, abi_ulong load_bias)
 {
     int i, shnum, nsyms, sym_idx = 0, str_idx = 0;
     struct elf_shdr *shdr;
@@ -1776,6 +1762,7 @@ static void load_symbols(struct elfhdr *hdr, int fd, abi_ulong load_bias)
 #endif
     s->lookup_symbol = lookup_symbolxx;
     s->next = syminfos;
+    s->filename = qemu_strdup(filename);
     syminfos = s;
 
     return;
@@ -1784,6 +1771,58 @@ give_up:
     free(s);
     free(strings);
     free(syms);
+}
+
+/* Load the symbols of the object ``fd`` dynamic loaded at the address
+ * ``load_bias``.  */
+void load_dl_symbols(int fd, abi_ulong load_bias)
+{
+    char path[PATH_MAX];
+    char proc_fd[PATH_MAX];
+    ssize_t status;
+    struct elfhdr ehdr;
+
+#if !defined(CONFIG_TCG_PLUGIN)
+    if (!qemu_log_enabled()) {
+        return;
+    }
+#elif defined(TARGET_ARM)
+    if (!qemu_log_enabled() && exit_addr) {
+        return;
+    }
+#endif
+
+    status = snprintf(proc_fd, PATH_MAX, "/proc/self/fd/%d", fd);
+    if (status < 0 || status >= PATH_MAX) {
+        return;
+    }
+
+    status = readlink(proc_fd, path, PATH_MAX);
+    if (status < 0 || status >= PATH_MAX) {
+        return;
+    }
+    path[status] = '\0';
+
+    status = pread(fd, &ehdr, sizeof(struct elfhdr), 0);
+    if (status < 0) {
+        return;
+    }
+
+    if (!elf_check_ident(&ehdr)) {
+        return;
+    }
+    bswap_ehdr(&ehdr);
+    if (!elf_check_ehdr(&ehdr)) {
+        return;
+    }
+
+    load_symbols(&ehdr, fd, path, ehdr.e_type == ET_EXEC ? 0 : load_bias);
+
+#if defined(TARGET_ARM)
+    if (!exit_addr) {
+        exit_addr = find_symbol("exit", ehdr.e_ident[EI_CLASS] == ELFCLASS64);
+    }
+#endif
 }
 
 int load_elf_binary(struct linux_binprm * bprm, struct target_pt_regs * regs,

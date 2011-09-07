@@ -560,6 +560,9 @@ abi_long target_mmap(abi_ulong start, abi_ulong len, int prot,
     page_dump(stdout);
     printf("\n");
 #endif
+    if (prot & PROT_EXEC) {
+        load_dl_symbols(fd, start);
+    }
     mmap_unlock();
     return start;
 fail:

@@ -370,6 +370,24 @@ const char *lookup_symbol(target_ulong orig_addr)
     return symbol;
 }
 
+/* Look up symbol/filename for debugging purpose.  */
+bool lookup_symbol2(target_ulong orig_addr, const char **symbol, const char **filename)
+{
+    struct syminfo *s;
+
+    for (s = syminfos; s; s = s->next) {
+        *symbol = s->lookup_symbol(s, orig_addr);
+        if (*symbol[0] != '\0') {
+            *filename = s->filename;
+            return true;
+        }
+    }
+
+    *symbol = "";
+    *filename = "";
+    return false;
+}
+
 #if !defined(CONFIG_USER_ONLY)
 
 #include "monitor.h"
