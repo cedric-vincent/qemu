@@ -30,6 +30,7 @@
 
 #include "qemu.h"
 #include "qemu-common.h"
+#include "tcg-plugin.h"
 
 //#define DEBUG_MMAP
 
@@ -560,8 +561,8 @@ abi_long target_mmap(abi_ulong start, abi_ulong len, int prot,
     page_dump(stdout);
     printf("\n");
 #endif
-    if (prot & PROT_EXEC) {
-        load_dl_symbols(fd, start);
+    if ((prot & PROT_EXEC) && (qemu_log_enabled() || tcg_plugin_enabled())) {
+        load_symbols(fd, start);
     }
     mmap_unlock();
     return start;

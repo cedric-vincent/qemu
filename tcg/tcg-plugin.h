@@ -35,11 +35,13 @@
  */
 
 #ifdef CONFIG_TCG_PLUGIN
+    bool tcg_plugin_enabled(void);
     void tcg_plugin_load(const char *dso);
     void tcg_plugin_cpus_stopped(void);
     void tcg_plugin_before_icg(CPUState *env, TranslationBlock *tb);
     void tcg_plugin_after_icg(CPUState *env, TranslationBlock *tb);
 #else
+#   define tcg_plugin_enabled() false
 #   define tcg_plugin_load(dso)
 #   define tcg_plugin_cpus_stopped()
 #   define tcg_plugin_before_icg(env, tb)

@@ -48,6 +48,12 @@
 /* Interface for the TCG plugin.  */
 static TCGPluginInterface tpi;
 
+/* Return true if a plugin was loaded with success.  */
+bool tcg_plugin_enabled(void)
+{
+    return tpi.version != 0;
+}
+
 /* Load the dynamic shared object "name" and call its function
  * "tpi_init()" to initialize itself.  Then, some sanity checks are
  * performed to ensure the dynamic shared object is compatible with
@@ -238,8 +244,9 @@ error:
     if (path)
         qemu_free(path);
 
-    if (!done)
+    if (!done) {
         memset(&tpi, 0, sizeof(tpi));
+    }
 
     return;
 }

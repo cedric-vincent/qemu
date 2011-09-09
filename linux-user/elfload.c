@@ -1671,7 +1671,7 @@ static int symcmp(const void *s0, const void *s1)
 }
 
 /* Best attempt to load symbols from this ELF object. */
-static void load_symbols(struct elfhdr *hdr, int fd, const char *filename, abi_ulong load_bias)
+static void load_symbols_(struct elfhdr *hdr, int fd, const char *filename, abi_ulong load_bias)
 {
     int i, shnum, nsyms, sym_idx = 0, str_idx = 0;
     struct elf_shdr *shdr;
@@ -1775,22 +1775,12 @@ give_up:
 
 /* Load the symbols of the object ``fd`` dynamic loaded at the address
  * ``load_bias``.  */
-void load_dl_symbols(int fd, abi_ulong load_bias)
+void load_symbols(int fd, abi_ulong load_bias)
 {
     char path[PATH_MAX];
     char proc_fd[PATH_MAX];
     ssize_t status;
     struct elfhdr ehdr;
-
-#if !defined(CONFIG_TCG_PLUGIN)
-    if (!qemu_log_enabled()) {
-        return;
-    }
-#elif defined(TARGET_ARM)
-    if (!qemu_log_enabled() && exit_addr) {
-        return;
-    }
-#endif
 
     status = snprintf(proc_fd, PATH_MAX, "/proc/self/fd/%d", fd);
     if (status < 0 || status >= PATH_MAX) {
@@ -1816,13 +1806,7 @@ void load_dl_symbols(int fd, abi_ulong load_bias)
         return;
     }
 
-    load_symbols(&ehdr, fd, path, ehdr.e_type == ET_EXEC ? 0 : load_bias);
-
-#if defined(TARGET_ARM)
-    if (!exit_addr) {
-        exit_addr = find_symbol("exit", ehdr.e_ident[EI_CLASS] == ELFCLASS64);
-    }
-#endif
+    load_symbols_(&ehdr, fd, path, ehdr.e_type == ET_EXEC ? 0 : load_bias);
 }
 
 int load_elf_binary(struct linux_binprm * bprm, struct target_pt_regs * regs,
