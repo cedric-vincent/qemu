@@ -2096,9 +2096,7 @@ int main(int argc, char **argv, char **envp)
     int show_vnc_port = 0;
 #endif
     int defconfig = 1;
-#ifdef CONFIG_TCG_PLUGIN
     const char *plugin_filename = NULL;
-#endif
     const char *trace_file = NULL;
     const char *log_mask = NULL;
     const char *log_file = NULL;
@@ -2995,12 +2993,10 @@ int main(int argc, char **argv, char **envp)
         exit(1);
     }
 
-#ifdef CONFIG_TCG_PLUGIN
     plugin_filename = plugin_filename ?: getenv("TCG_PLUGIN");
     if (plugin_filename) {
         tcg_plugin_load(plugin_filename);
     }
-#endif /* CONFIG_TCG_PLUGIN */
 
     /*
      * Get the default machine options from the machine if it is not already
