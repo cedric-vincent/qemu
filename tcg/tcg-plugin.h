@@ -59,7 +59,7 @@ typedef struct
     uint16_t cpu_index;
     uint16_t size;
     uint32_t icount;
-} __attribute__((__packed__)) TPIHelperInfo;
+} __attribute__((__packed__, __may_alias__)) TPIHelperInfo;
 
 struct TCGPluginInterface;
 typedef struct TCGPluginInterface TCGPluginInterface;
