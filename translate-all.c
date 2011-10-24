@@ -68,9 +68,9 @@ int cpu_gen_code(CPUState *env, TranslationBlock *tb, int *gen_code_size_ptr)
 #endif
     tcg_func_start(s);
 
-    tcg_plugin_before_icg(env, tb);
+    tcg_plugin_before_gen_tb(env, tb);
     gen_intermediate_code(env, tb);
-    tcg_plugin_after_icg(env, tb);
+    tcg_plugin_after_gen_tb(env, tb);
 
     /* generate machine code */
     gen_code_buf = tb->tc_ptr;
@@ -126,9 +126,9 @@ int cpu_restore_state(TranslationBlock *tb,
 #endif
     tcg_func_start(s);
 
-    tcg_plugin_before_icg(env, tb);
+    tcg_plugin_before_gen_tb(env, tb);
     gen_intermediate_code_pc(env, tb);
-    tcg_plugin_after_icg(env, tb);
+    tcg_plugin_after_gen_tb(env, tb);
 
     if (use_icount) {
         /* Reset the cycle counter to the start of the block.  */

@@ -9818,6 +9818,8 @@ static inline void gen_intermediate_code_internal(CPUState *env,
         store_cpu_field(tmp, condexec_bits);
       }
     do {
+        tcg_plugin_register_info(dc->pc, env, tb);
+
 #ifdef CONFIG_USER_ONLY
         /* Intercept jump to the magic kernel page.  */
         if (dc->pc >= 0xffff0000) {

@@ -7791,6 +7791,8 @@ static inline void gen_intermediate_code_internal(CPUState *env,
 
     gen_icount_start();
     for(;;) {
+        tcg_plugin_register_info(pc_ptr, env, tb);
+
         if (unlikely(!QTAILQ_EMPTY(&env->breakpoints))) {
             QTAILQ_FOREACH(bp, &env->breakpoints, entry) {
                 if (bp->pc == pc_ptr &&
