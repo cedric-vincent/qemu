@@ -69,10 +69,10 @@ profile
         main         | /tmp/a.out          |     32 |      8
         [...]
 
-dineroIV
+dineroIV-data
     Print the address/size/cpu of the current emulated instruction (in
-    a per basic block basis) in a format supported by DineroIV, a
-    highly configurable cache simulator::
+    a per basic block basis) XXX data XXX in a format supported by
+    DineroIV, a highly configurable cache simulator::
 
         i 0x00008254 0x00000004 CPU #0
         i 0x00008258 0x00000004 CPU #0
@@ -83,12 +83,8 @@ dineroIV
 
     This is a really good alternative to Cachegrind.
 
-For information, I_ am writing another plugin that generates a report
-in the Callgrind format so as to be visualized with KCachegrind.
-Also, I_ didn't incorporate all features of the initial TCG plugin
-support written by Christophe GUILLON yet.
-
-.. _I: cedric.vincent@st.com
+callgrind
+    XXX Callgrind format so as to be visualized with KCachegrind.
 
 
 How to Use TCG Plugins?
@@ -146,6 +142,9 @@ TPI_SYMBOL_PC=name
     Define TPI_LOW_PC/TPI_HIGH_PC according to the value/size of the
     symbol ``name``. This option isn't supported yet.
 
+TPI_MUTEX_PROTECTED
+    XXX
+
 Note that currently notification works in a per basic block basis,
 that is, the plugin is notified for any basic block that contains
 TPI_LOW_PC or TPI_HIGH_PC.
@@ -188,25 +187,26 @@ TCG Plugins?`_::
         const char *mode;
         size_t sizeof_CPUState;
         size_t sizeof_TranslationBlock;
-
+        
         /* Common parameters.  */
         int nb_cpus;
         FILE *output;
         uint64_t low_pc;
         uint64_t high_pc;
         bool verbose;
-
+        
         /* Parameters for non-generic plugins.  */
         bool is_generic;
         const CPUState *env;
         const TranslationBlock *tb;
-
+        
         /* Plugin's callbacks.  */
         tpi_cpus_stopped_t cpus_stopped;
-        tpi_before_icg_t   before_icg;
-        tpi_after_icg_t    after_icg;
-        tpi_tb_helper_code_t tb_helper_code;
-        tpi_tb_helper_data_t tb_helper_data;
+        tpi_before_gen_tb_t before_gen_tb;
+        tpi_after_gen_tb_t  after_gen_tb;
+        tpi_pre_tb_helper_code_t pre_tb_helper_code;
+        tpi_pre_tb_helper_data_t pre_tb_helper_data;
+        tpi_after_gen_opc_t after_gen_opc;
     };
 
 For convenience, there are two C macros that automatically set these
@@ -224,19 +224,19 @@ initialization failure to QEMU::
 Then, this function is used to declare each callback implemented by
 the plugin, see next section for details.  Here is an example::
 
-    tpi->tb_helper_code = tb_helper_code;
+    tpi->pre_tb_helper_code = pre_tb_helper_code;
     tpi->cpus_stopped = cpus_stopped;
 
 
-Callbacks
----------
+Translation-Time Callbacks
+--------------------------
 
-There are currently five callbacks available, some are called at
-`translation-time`_ others at `execution-time`_, see `Two Kinds of
-Flow`_ for details.  In the following descriptions, the short terms
-*tb* and *icg* stand for *Translated Block* and *Intermediate Code
-Generation* respectively.  Note that a given plugin doesn't have to
-provide all of these callbacks, they are *all* optional.
+There are currently five regular callbacks available, all are called
+at `translation-time`_, see `Two Kinds of Flow`_ for details.  In the
+following descriptions, the short terms *tb* and *opc* stand for
+*Translated Block* and *OpXXX Code* respectively.  Note that a given
+plugin doesn't have to provide all of these callbacks, they are *all*
+optional.
 
 
 cpus_stopped
@@ -249,13 +249,60 @@ declaration is::
     void cpus_stopped(const TCGPluginInterface *tpi)
 
 
-tb_helper_code
+before_gen_tb
+`````````````
+
+This function is called before a basic block is translated from
+*guest* instructions to TCG opcodes, and it is mainly used to insert
+TCG opcodes or calls to helpers.  Its declaration is::
+
+    void before_gen_tb(const TCGPluginInterface *tpi)
+
+
+after_gen_tb
+````````````
+
+This function is called after a basic block is translated from *guest*
+instructions to TCG opcodes, and it is mainly used to patch the value
+of variables that were undefined when ``before_gen_tb()`` was called,
+this is typically the case for ``tb->size`` and ``tb->icount``.  Its
+declaration is::
+
+    void after_gen_tb(const TCGPluginInterface *tpi)
+
+
+before_gen_opc
 ``````````````
+
+XXX
+
+
+before_gen_opc
+``````````````
+
+XXX
+
+
+Callbacks for Predefined Helpers
+--------------------------------
+
+XXX two predefined helpers XXX *before* the execution of a translated
+block XXX *after* the execution of a translated opcode.  XXX XXX_data
+are called at `translation-time`_ XXX_code at `execution-time`_, see
+`Two Kinds of Flow`_ for details.  In the following descriptions, the
+short terms *tb* and *opc* stand for *Translated Block* and *OpXXX
+Code* respectively.  Note that a given plugin doesn't have to provide
+all of these callbacks, they are *all* optional.
+
+
+
+pre_tb_helper_code
+``````````````````
 
 This function is called each time a translated basic block is executed
 and is mainly used to collect analysis data.  Its declaration is::
 
-    void tb_helper_code(const TCGPluginInterface *tpi,
+    void pre_tb_helper_code(const TCGPluginInterface *tpi,
                         TPIHelperInfo info, uint64_t address,
                         uint64_t data1, uint64_t data2)
 
@@ -277,52 +324,48 @@ block::
     } __attribute__((__packed__)) TPIHelperInfo;
 
 The optional parameters ``data1`` and ``data2`` are defined at
-translation-time by the function ``tb_helper_data()``, that means they
+translation-time by the function ``pre_tb_helper_data()``, that means they
 keep their initial values (for a given basic block) during the
 execution.
 
+XXX explain why called before the execution of the translated block
+(safest + most useful)
 
-tb_helper_data
-``````````````
+
+pre_tb_helper_data
+``````````````````
 
 This function is called each time a basic block *was* translated
 (**not executed**) and is mainly used to define the parameters passed
-to ``tb_helper_code()``.  Its declaration is::
+to ``pre_tb_helper_code()``.  Its declaration is::
 
-    void tb_helper_data(const TCGPluginInterface *tpi,
-                        TPIHelperInfo info, uint64_t address,
-                        uint64_t *data1, uint64_t *data2)
+    void pre_tb_helper_data(const TCGPluginInterface *tpi,
+                            TPIHelperInfo info, uint64_t address,
+                            uint64_t *data1, uint64_t *data2)
 
 The parameter ``info`` is the same as above and the pointers ``data1``
 and ``data2`` reference the eponymous parameters of
-``tb_helper_code()`` for the given translated block.  Note that they
+``pre_tb_helper_code()`` for the given translated block.  Note that they
 are defined at translation-time, that is, they can't be changed later
 on.  See `Two Kinds of Flow`_ for explanation.  Technically ``data1``
 and ``data2`` can hold anything and are particularly useful to
-optimize the execution of the ``tb_helper_code()`` as described in
+optimize the execution of the ``pre_tb_helper_code()`` as described in
 section `Optimization`_.
 
 
-before_icg
-``````````
+post_opc_helper_code
+````````````````````
 
-This function is called before a basic block is translated from
-*guest* instructions to TCG opcodes, and it is mainly used to insert
-TCG opcodes or calls to helpers.  Its declaration is::
+XXX
 
-    void before_icg(const TCGPluginInterface *tpi)
+XXX explain why called after the execution of the opcode (safest +
+value already set but can be overwritten).
 
 
-after_icg
-`````````
+post_opc_helper_data
+````````````````````
 
-This function is called after a basic block is translated from *guest*
-instructions to TCG opcodes, and it is mainly used to patch the value
-of variables that were undefined when ``before_icg()`` was called,
-this is typically the case for ``tb->size`` and ``tb->icount``.  Its
-declaration is::
-
-    void after_icg(const TCGPluginInterface *tpi)
+XXX debug_insn_start
 
 
 Two Kinds of Flow
@@ -349,19 +392,19 @@ translation flow looks like this diagram::
     +---------------------------------+
                      |
             +------------------+
-            |   before_icg()   |
+            |  before_gen_tb() |
             +------------------+
                      |
     +---------------------------------+
-    |     gen_intermediate_code()     |
-    |  translates guest instructions  |
-    |        into TCG opcodes         |
-    +---------------------------------+
+    |     gen_intermediate_code()     |       +-------------------+
+    |  translates guest instructions  | - - - |     gen_opc()     |
+    |        into TCG opcodes         |       | opc_helper_data() |
+    +---------------------------------+       +-------------------+
                      |
-            +------------------+
-            |   after_icg()    |
-            | tb_helper_data() |
-            +------------------+
+          +----------------------+
+          |    after_gen_tb()    |
+          | pre_tb_helper_data() |
+          +----------------------+
                      |
     +---------------------------------+
     |   TCG opcodes are translated    |
@@ -391,21 +434,21 @@ Let's take the example below::
         i = 0
         goto block1
 
-The function ``tb_helper_code()`` is called each time the translated
+The function ``pre_tb_helper_code()`` is called each time the translated
 version of ``block1`` and ``block2`` are executed.  The execution flow
 looks like this diagram::
 
                     +<-------------------+<--+
                     |                    |   |
     +--------------------------------+   |   |
-    | tb_helper_code() then the      |   |   |
+    | pre_tb_helper_code() then the  |   |   |
     | translated block1 are executed |   |   |
     +--------------------------------+   |   |
                     |                    |   |
                     +------------------->+   |
                     |                        |
     +--------------------------------+       |
-    | tb_helper_code() then the      |       |
+    | pre_tb_helper_code() then the  |       |
     | translated block2 are executed |       |
     +--------------------------------+       |
                     |                        |
@@ -414,6 +457,28 @@ looks like this diagram::
 
 Advices
 -------
+
+Deterministic code generation
+`````````````````````````````
+
+XXX::
+
+    movi_i64 tmp6,$value
+
+XXX::
+
+    0x601b7d66:  mov    $value,%ecx
+
+XXX::
+
+    0x601b7d66:  movabs $value,%rcx
+
+
+Re-translated block
+```````````````````
+
+XXX
+
 
 Pointer
 ```````
@@ -424,7 +489,7 @@ or moved.  For instance, you can't access safely at execution-time [a
 field of] a ``TranslationBlock`` the way below since there's a chance
 that sooner or later the pointer ``tb`` will be freed::
 
-    ... before_icg(...)
+    ... before_gen_tb(...)
     {
         ptr = tcg_const_ptr(tpi->tb);
         // generate TCG opcodes that use
@@ -433,7 +498,7 @@ that sooner or later the pointer ``tb`` will be freed::
 
 Instead, you have to **copy** the needed field(s)::
 
-    ... before_icg(...)
+    ... before_gen_tb(...)
     {
         TCGv_i64 pc = tcg_const_i64(tpi->tb->flags);
     }
@@ -444,26 +509,26 @@ Optimization
 
 It's worth saying the more analysis is done at translation-time, the
 less analysis is done at execution-time.  For instance, you can call
-``lookup_symbol(pc)`` in ``tb_helper_code()`` to get the name of the
+``lookup_symbol(pc)`` in ``pre_tb_helper_code()`` to get the name of the
 function currently executed, but it will be called each time the given
 block is executed::
 
-    ... tb_helper_code(...)
+    ... pre_tb_helper_code(...)
     {
         const char *symbol = lookup_symbol(address);
     }
 
 Since the matching ``pc/symbol`` never changes, it's cheaper to call
-``lookup_symbol(pc)`` in ``tb_helper_data()`` -- thus once per basic
+``lookup_symbol(pc)`` in ``pre_tb_helper_data()`` -- thus once per basic
 block translation -- to store the result in ``data1`` and then use
-this pointer directly in ``tb_helper_code()``::
+this pointer directly in ``pre_tb_helper_code()``::
 
-    ... tb_helper_code(...)
+    ... pre_tb_helper_code(...)
     {
         const char *symbol = (const char *)data1;
     }
 
-    ... tb_helper_data(...)
+    ... pre_tb_helper_data(...)
     {
         const char *symbol = lookup_symbol(address);
         *data1 = (uint64_t)symbol;
@@ -486,6 +551,12 @@ thread-safe since there's a chance that several threads increment the
 counter simultaneously in a non-atomic way.
 
 
+XXX
+```
+
+XXX Not all instruction are converted to TCG opcodes.
+
+
 Generic Plugin
 ``````````````
 
@@ -498,6 +569,8 @@ when a plugin declares itself as generic, these two fields are always
 and ``icount-inlined`` basically do the same thing but this latter
 isn't generic because it can't be used with a version of QEMU built
 for another CPU and/or mode.
+
+XXX tcg_gen XXX
 
 
 Custom Helper
@@ -529,7 +602,7 @@ source::
 Now you can *insert* a call to this helper in the prologue of any
 translated block::
 
-    ... before_icg(...)
+    ... before_gen_tb(...)
     {
         TCGv_i64 pc = tcg_const_i64((uint64_t)address);
         gen_helper_example(pc);
@@ -578,7 +651,7 @@ explained in a previous section::
     #include "tcg-plugin.h"
     #include "disas.h"
 
-    static void tb_helper_code(const TCGPluginInterface *tpi,
+    static void pre_tb_helper_code(const TCGPluginInterface *tpi,
                                TPIHelperInfo info, uint64_t address,
                                uint64_t data1, uint64_t data2)
     {
@@ -588,7 +661,7 @@ explained in a previous section::
                 info.icount, symbol, address);
     }
 
-    static void tb_helper_data(const TCGPluginInterface *tpi,
+    static void pre_tb_helper_data(const TCGPluginInterface *tpi,
                                TPIHelperInfo info, uint64_t address,
                                uint64_t *data1, uint64_t *data2)
     {
@@ -599,6 +672,42 @@ explained in a previous section::
     void tpi_init(TCGPluginInterface *tpi)
     {
         TPI_INIT_VERSION_GENERIC(*tpi);
-        tpi->tb_helper_code = tb_helper_code;
-        tpi->tb_helper_data = tb_helper_data;
+        tpi->pre_tb_helper_code = pre_tb_helper_code;
+        tpi->pre_tb_helper_data = pre_tb_helper_data;
     }
+
+
+Performance Impact
+==================
+
+
+* ARMedSlack 13.37
+
+* Links 2.3pre1 (mono-threaded console-based web-browser)
+
+* off-line version of a blog post_, as saved by Firefox 9.0b2
+
+* trace (XXX block based) and dineroIV-data (instruction based)
+
+.. _post http://perl6advent.wordpress.com/2011/12/14/meta-programming-what-why-and-how/
+
+================================================  ====================
+instrumentation XXX                                           slowdown
+================================================  ====================
+none (reference)                                                    0%
+inlined                                                           XXX%
+helper that does nothing                                         ~ 25%
+helper that does nothing XXX protected a mutex             100% ~ 200%
+helper that calls getsymbol() @ translation                      ~ 30%
+helper that calls getsymbol() @ execution                       ~ 900%
+helper that prints a trace in file                       3000% ~ 5000%
+================================================  ====================
+
+This is *not* a benchmark XXX don't use it to conclude too much, for
+instance XXX not conclude mutext protected XXX is twice as slow XXX
+(third row).  If you want to know the impact of XXX, just benchmark it
+by yourself!
+
+My conclusion is XXX printing a trace consumes a lot of CPU time, it
+could be avoided XXX dineroIV-data directly to the cache simulator
+instead of XXX a file.

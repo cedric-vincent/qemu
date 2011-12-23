@@ -47,18 +47,18 @@ typedef struct {
     uint64_t icount;
 } HashValue;
 
-static void tb_helper_code(const TCGPluginInterface *tpi,
-                           TPIHelperInfo info, uint64_t address,
-                           uint64_t data1, uint64_t data2)
+static void pre_tb_helper_code(const TCGPluginInterface *tpi,
+                               TPIHelperInfo info, uint64_t address,
+                               uint64_t data1, uint64_t data2)
 {
     HashValue *hash_value = (HashValue *)(uintptr_t)data1;
     hash_value->size   += info.size;
     hash_value->icount += info.icount;
 }
 
-static void tb_helper_data(const TCGPluginInterface *tpi,
-                           TPIHelperInfo info, uint64_t address,
-                           uint64_t *data1, uint64_t *data2)
+static void pre_tb_helper_data(const TCGPluginInterface *tpi,
+                               TPIHelperInfo info, uint64_t address,
+                               uint64_t *data1, uint64_t *data2)
 {
     HashKey hash_key;
     HashValue *hash_value;
@@ -156,8 +156,8 @@ void tpi_init(TCGPluginInterface *tpi)
 {
     TPI_INIT_VERSION_GENERIC(*tpi);
 
-    tpi->tb_helper_code = tb_helper_code;
-    tpi->tb_helper_data = tb_helper_data;
+    tpi->pre_tb_helper_code = pre_tb_helper_code;
+    tpi->pre_tb_helper_data = pre_tb_helper_data;
     tpi->cpus_stopped = cpus_stopped;
 
     hash = g_hash_table_new_full(hash_func, key_equal_func, g_free, g_free);

@@ -360,6 +360,10 @@ static void realview_init(ram_addr_t ram_size,
     /* 0x68000000 PCI mem 1.  */
     /* 0x6c000000 PCI mem 2.  */
 
+#define STM_STIH415_BASE	0xFD4D0000
+     sysbus_create_varargs("stm_trace",STM_STIH415_BASE, NULL);
+
+
     /* ??? Hack to map an additional page of ram for the secondary CPU
        startup code.  I guess this works on real hardware because the
        BootROM happens to be in ROM/flash or in memory that isn't clobbered

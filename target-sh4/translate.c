@@ -1966,6 +1966,8 @@ gen_intermediate_code_internal(CPUState * env, TranslationBlock * tb,
         max_insns = CF_COUNT_MASK;
     gen_icount_start();
     while (ctx.bstate == BS_NONE && gen_opc_ptr < gen_opc_end) {
+        tcg_plugin_register_info(ctx.pc, env, tb);
+
         if (unlikely(!QTAILQ_EMPTY(&env->breakpoints))) {
             QTAILQ_FOREACH(bp, &env->breakpoints, entry) {
                 if (ctx.pc == bp->pc) {

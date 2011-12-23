@@ -12328,6 +12328,8 @@ gen_intermediate_code_internal (CPUState *env, TranslationBlock *tb,
     LOG_DISAS("\ntb %p idx %d hflags %04x\n", tb, ctx.mem_idx, ctx.hflags);
     gen_icount_start();
     while (ctx.bstate == BS_NONE) {
+        tcg_plugin_register_info(ctx.pc, env, tb);
+
         if (unlikely(!QTAILQ_EMPTY(&env->breakpoints))) {
             QTAILQ_FOREACH(bp, &env->breakpoints, entry) {
                 if (bp->pc == ctx.pc) {

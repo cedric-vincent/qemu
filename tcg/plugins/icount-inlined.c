@@ -29,8 +29,8 @@
 #include <stdint.h>
 #include <inttypes.h>
 
-#include "tcg-plugin.h"
 #include "tcg-op.h"
+#include "tcg-plugin.h"
 
 static TCGArg **icount_total_args;
 static uint64_t *icount_total;
@@ -46,7 +46,7 @@ static void cpus_stopped(const TCGPluginInterface *tpi)
 }
 
 /* This function generates code which is *not* thread-safe!  */
-static void before_icg(const TCGPluginInterface *tpi)
+static void before_gen_tb(const TCGPluginInterface *tpi)
 {
     TCGv_ptr icount_ptr;
     TCGv_i64 icount_tmp;
@@ -81,7 +81,7 @@ static void before_icg(const TCGPluginInterface *tpi)
     tcg_temp_free_ptr(icount_ptr);
 }
 
-static void after_icg(const TCGPluginInterface *tpi)
+static void after_gen_tb(const TCGPluginInterface *tpi)
 {
     /* Patch parameter value.  */
     *icount_total_args[tpi->env->cpu_index] = tpi->tb->icount;
@@ -91,9 +91,9 @@ void tpi_init(TCGPluginInterface *tpi)
 {
     TPI_INIT_VERSION(*tpi);
 
-    tpi->cpus_stopped = cpus_stopped;
-    tpi->before_icg   = before_icg;
-    tpi->after_icg    = after_icg;
+    tpi->cpus_stopped  = cpus_stopped;
+    tpi->before_gen_tb = before_gen_tb;
+    tpi->after_gen_tb  = after_gen_tb;
 
     icount_total = qemu_mallocz(tpi->nb_cpus * sizeof(uint64_t));
     icount_total_args = qemu_mallocz(tpi->nb_cpus * sizeof(TCGArg *));

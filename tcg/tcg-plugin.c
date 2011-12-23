@@ -48,6 +48,14 @@
 /* Interface for the TCG plugin.  */
 static TCGPluginInterface tpi;
 
+/* Return true if a plugin was loaded with success.  */
+bool tcg_plugin_enabled(void)
+{
+    return tpi.version != 0;
+}
+
+static bool mutex_protected;
+
 /* Load the dynamic shared object "name" and call its function
  * "tpi_init()" to initialize itself.  Then, some sanity checks are
  * performed to ensure the dynamic shared object is compatible with
@@ -158,6 +166,8 @@ void tcg_plugin_load(const char *name)
         }
     }
 
+    mutex_protected = (getenv("TPI_MUTEX_PROTECTED") != NULL);
+
     /*
      * Tell the plugin to initialize itself.
      */
@@ -221,10 +231,11 @@ void tcg_plugin_load(const char *name)
         fprintf(tpi.output, "plugin: info: low pc = 0x%016" PRIx64 "\n", tpi.low_pc);
         fprintf(tpi.output, "plugin: info: high pc = 0x%016" PRIx64 "\n", tpi.high_pc);
         fprintf(tpi.output, "plugin: info: cpus_stopped callback = %p\n", tpi.cpus_stopped);
-        fprintf(tpi.output, "plugin: info: before_icg callback = %p\n", tpi.before_icg);
-        fprintf(tpi.output, "plugin: info: after_icg callback = %p\n", tpi.after_icg);
-        fprintf(tpi.output, "plugin: info: tb_helper_code callback = %p\n", tpi.tb_helper_code);
-        fprintf(tpi.output, "plugin: info: tb_helper_data callback = %p\n", tpi.tb_helper_data);
+        fprintf(tpi.output, "plugin: info: before_gen_tb callback = %p\n", tpi.before_gen_tb);
+        fprintf(tpi.output, "plugin: info: after_gen_tb callback = %p\n", tpi.after_gen_tb);
+        fprintf(tpi.output, "plugin: info: after_gen_opc callback = %p\n", tpi.after_gen_opc);
+        fprintf(tpi.output, "plugin: info: pre_tb_helper_code callback = %p\n", tpi.pre_tb_helper_code);
+        fprintf(tpi.output, "plugin: info: pre_tb_helper_data callback = %p\n", tpi.pre_tb_helper_data);
         fprintf(tpi.output, "plugin: info: is%s generic\n", tpi.is_generic ? "" : " not");
     }
 
@@ -238,49 +249,11 @@ error:
     if (path)
         qemu_free(path);
 
-    if (!done)
+    if (!done) {
         memset(&tpi, 0, sizeof(tpi));
+    }
 
     return;
-}
-
-static TCGArg *tb_info;
-static TCGArg *tb_data1;
-static TCGArg *tb_data2;
-
-/* Generate TCG opcodes to call helper_tcg_plugin_tb*().  */
-static void gen_tb_helper(CPUState *env, TranslationBlock *tb)
-{
-    TCGv_i64 address = tcg_const_i64((uint64_t)tb->pc);
-
-    /* Patched in tcg_plugin_after_icg().  */
-    tb_info = gen_opparam_ptr + 1;
-    TCGv_i64 info = tcg_const_i64(0);
-
-    TCGv_i64 data1;
-    TCGv_i64 data2;
-    if (tpi.tb_helper_data) {
-        /* Patched in tcg_plugin_after_icg().  */
-        tb_data1 = gen_opparam_ptr + 1;
-        data1 = tcg_const_i64(0);
-
-        /* Patched in tcg_plugin_after_icg().  */
-        tb_data2 = gen_opparam_ptr + 1;
-        data2 = tcg_const_i64(0);
-
-        gen_helper_tcg_plugin_tb2(address, info, data1, data2);
-    }
-    else {
-        gen_helper_tcg_plugin_tb(address, info);
-    }
-
-    tcg_temp_free_i64(address);
-    tcg_temp_free_i64(info);
-
-    if (tpi.tb_helper_data) {
-        tcg_temp_free_i64(data1);
-        tcg_temp_free_i64(data2);
-    }
 }
 
 /* Hook called once all CPUs are stopped/paused.  */
@@ -291,46 +264,80 @@ void tcg_plugin_cpus_stopped(void)
     }
 }
 
+/* Avoid "recursive" instrumentation.  */
+static bool in_gen_tpi_helper = false;
+
+static TCGArg *tb_info;
+static TCGArg *tb_data1;
+static TCGArg *tb_data2;
+
 /* Wrapper to ensure only non-generic plugins can access non-generic data.  */
-#define TPI_CALLBACK_NOT_GENERIC(callback, ...)         \
-    do {                                                \
-        if (!tpi.is_generic) {                          \
-            tpi.env = env;                              \
-            tpi.tb = tb;                                \
-        }                                               \
-        tpi.callback(&tpi, ##__VA_ARGS__);              \
-        tpi.env = NULL;                                 \
-        tpi.tb = NULL;                                  \
+#define TPI_CALLBACK_NOT_GENERIC(callback, ...) \
+    do {                                        \
+        if (!tpi.is_generic) {                  \
+            tpi.env = env;                      \
+            tpi.tb = tb;                        \
+        }                                       \
+        tpi.callback(&tpi, ##__VA_ARGS__);      \
+        tpi.env = NULL;                         \
+        tpi.tb = NULL;                          \
     } while (0);
 
 /* Hook called before the Intermediate Code Generation (ICG).  */
-void tcg_plugin_before_icg(CPUState *env, TranslationBlock *tb)
+void tcg_plugin_before_gen_tb(CPUState *env, TranslationBlock *tb)
 {
     if (tb->pc < tpi.low_pc || tb->pc >= tpi.high_pc) {
         return;
     }
 
-    if (tpi.before_icg) {
-        TPI_CALLBACK_NOT_GENERIC(before_icg);
+    assert(!in_gen_tpi_helper);
+    in_gen_tpi_helper = true;
+
+    if (tpi.before_gen_tb) {
+        TPI_CALLBACK_NOT_GENERIC(before_gen_tb);
     }
 
-    if (tpi.tb_helper_code) {
-        gen_tb_helper(env, tb);
+    /* Generate TCG opcodes to call helper_tcg_plugin_tb*().  */
+    if (tpi.pre_tb_helper_code) {
+        TCGv_i64 data1;
+        TCGv_i64 data2;
+
+        TCGv_i64 address = tcg_const_i64((uint64_t)tb->pc);
+
+        /* Patched in tcg_plugin_after_gen_tb().  */
+        tb_info = gen_opparam_ptr + 1;
+        TCGv_i64 info = tcg_const_i64(0);
+
+        /* Patched in tcg_plugin_after_gen_tb().  */
+        tb_data1 = gen_opparam_ptr + 1;
+        data1 = tcg_const_i64(0);
+
+        /* Patched in tcg_plugin_after_gen_tb().  */
+        tb_data2 = gen_opparam_ptr + 1;
+        data2 = tcg_const_i64(0);
+
+        gen_helper_tcg_plugin_pre_tb(address, info, data1, data2);
+
+        tcg_temp_free_i64(data2);
+        tcg_temp_free_i64(data1);
+        tcg_temp_free_i64(info);
+        tcg_temp_free_i64(address);
     }
+
+    in_gen_tpi_helper = false;
 }
 
 /* Hook called after the Intermediate Code Generation (ICG).  */
-void tcg_plugin_after_icg(CPUState *env, TranslationBlock *tb)
+void tcg_plugin_after_gen_tb(CPUState *env, TranslationBlock *tb)
 {
     if (tb->pc < tpi.low_pc || tb->pc >= tpi.high_pc) {
         return;
     }
 
-    if (tpi.after_icg) {
-        TPI_CALLBACK_NOT_GENERIC(after_icg);
-    }
+    assert(!in_gen_tpi_helper);
+    in_gen_tpi_helper = true;
 
-    if (tpi.tb_helper_code) {
+    if (tpi.pre_tb_helper_code) {
         /* Patch helper_tcg_plugin_tb*() parameters.  */
 
         ((TPIHelperInfo *)tb_info)->cpu_index = env->cpu_index;
@@ -342,63 +349,106 @@ void tcg_plugin_after_icg(CPUState *env, TranslationBlock *tb)
         *(tb_info + 2) = tb->icount;
 #endif
 
-        if (tpi.tb_helper_data) {
-            /* FIXME: qemu-sh4 crashes when built on Ubuntu 10.04.1
-             * x86_64 (not on Slackware64-13.37) if some bits of data2
-             * aren't initialized, either here or in the plugin.  This
-             * is really unexpected since data2 should be read by the
-             * plugin only!
-             */
+        /* Callback variables have to be initialized [when not used]
+         * to ensure deterministic code generation, e.g. on some host
+         * the opcode "movi_i64 tmp,$value" isn't encoded the same
+         * whether $value fits into a given host instruction or
+         * not.  */
+        uint64_t data1 = 0;
+        uint64_t data2 = 0;
 
-            uint64_t data1 = 0;
-            uint64_t data2 = 0;
-
-            TPI_CALLBACK_NOT_GENERIC(tb_helper_data, *(TPIHelperInfo *)tb_info, tb->pc, &data1, &data2);
+        if (tpi.pre_tb_helper_data) {
+            TPI_CALLBACK_NOT_GENERIC(pre_tb_helper_data, *(TPIHelperInfo *)tb_info, tb->pc, &data1, &data2);
+        }
 
 #if TCG_TARGET_REG_BITS == 64
-            *(uint64_t *)tb_data1 = data1;
-            *(uint64_t *)tb_data2 = data2;
+        *(uint64_t *)tb_data1 = data1;
+        *(uint64_t *)tb_data2 = data2;
 #else
-            /* i64 variables use 2 arguments on 32-bit host.  */
-            *tb_data1 = data1 & 0xFFFFFFFF;
-            *(tb_data1 + 2) = data1 >> 32;
+        /* i64 variables use 2 arguments on 32-bit host.  */
+        *tb_data1 = data1 & 0xFFFFFFFF;
+        *(tb_data1 + 2) = data1 >> 32;
 
-            *tb_data2 = data2 & 0xFFFFFFFF;
-            *(tb_data2 + 2) = data2 >> 32;
+        *tb_data2 = data2 & 0xFFFFFFFF;
+        *(tb_data2 + 2) = data2 >> 32;
 #endif
+    }
+
+    if (tpi.after_gen_tb) {
+        TPI_CALLBACK_NOT_GENERIC(after_gen_tb);
+    }
+
+    in_gen_tpi_helper = false;
+}
+
+static uint64_t current_pc = 0;
+
+/* Hook called each time a guest intruction is disassembled.  */
+void tcg_plugin_register_info(uint64_t pc, CPUState *env, TranslationBlock *tb)
+{
+    current_pc = pc;
+    if (!tpi.is_generic) {
+        tpi.env = env;
+        tpi.tb  = tb;
+    }
+}
+
+/* Hook called each time a TCG opcode is generated.  */
+void tcg_plugin_after_gen_opc(TCGOpcode opname, uint16_t *opcode,
+                              TCGArg *opargs, uint8_t nb_args)
+{
+    TPIOpCode tpi_opcode;
+
+    if (current_pc < tpi.low_pc || current_pc >= tpi.high_pc) {
+        return;
+    }
+
+    if (in_gen_tpi_helper)
+        return;
+
+    in_gen_tpi_helper = true;
+
+    nb_args = MIN(nb_args, TPI_MAX_OP_ARGS);
+
+    tpi_opcode.name = opname;
+    tpi_opcode.pc   = current_pc;
+    tpi_opcode.nb_args = nb_args;
+
+    tpi_opcode.opcode = opcode;
+    tpi_opcode.opargs = opargs;
+
+    if (tpi.after_gen_opc) {
+        tpi.after_gen_opc(&tpi, &tpi_opcode);
+    }
+
+    in_gen_tpi_helper = false;
+}
+
+/* Ensure resources used by *_helper_code are protected from
+   concurrent access.  */
+static pthread_mutex_t helper_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* TCG helper used to call pre_tb_helper_code() in a thread-safe
+ * way.  */
+void helper_tcg_plugin_pre_tb(uint64_t address, uint64_t info,
+                              uint64_t data1, uint64_t data2)
+{
+    int error;
+
+    if (mutex_protected) {
+        error = pthread_mutex_lock(&helper_mutex);
+        if (error) {
+            fprintf(stderr, "plugin: in call_pre_tb_helper_code(), "
+                    "pthread_mutex_lock() has failed: %s\n",
+                    strerror(error));
+            goto end;
         }
     }
-}
 
-/* Real TCG helper used to call tb_helper_code() in a thread-safe
- * way.  */
-static inline void call_tb_helper_code(uint64_t address, uint64_t info,
-                                       uint64_t data1, uint64_t data2)
-{
-    /* Ensure resources only used by tb_helper_code are protected from
-       concurrent access.  */
-    static pthread_mutex_t tb_helper_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-    int error = pthread_mutex_lock(&tb_helper_mutex);
-    if (error) {
-        fprintf(stderr, "plugin: call_tb_helper() failed to pthread_mutex_lock(): %s\n",
-                strerror(error));
-        goto end;
-    }
-
-    tpi.tb_helper_code(&tpi, *(TPIHelperInfo *)&info, address, data1, data2);
+    tpi.pre_tb_helper_code(&tpi, *(TPIHelperInfo *)&info, address, data1, data2);
 
 end:
-    pthread_mutex_unlock(&tb_helper_mutex);
-}
-
-void helper_tcg_plugin_tb(uint64_t address, uint64_t info)
-{
-    call_tb_helper_code(address, info, 0, 0);
-}
-
-void helper_tcg_plugin_tb2(uint64_t address, uint64_t info,
-                           uint64_t data1, uint64_t data2)
-{
-    call_tb_helper_code(address, info, data1, data2);
+    if (mutex_protected) {
+        pthread_mutex_unlock(&helper_mutex);
+    }
 }

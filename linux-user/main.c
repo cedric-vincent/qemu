@@ -2879,6 +2879,7 @@ int main(int argc, char **argv, char **envp)
     const char *cpu_model;
     const char *log_file = DEBUG_LOGFILE;
     const char *log_mask = NULL;
+    const char *plugin_filename = NULL;
     struct target_pt_regs regs1, *regs = &regs1;
     struct image_info info1, *info = &info1;
     struct linux_binprm bprm;
@@ -2894,9 +2895,6 @@ int main(int argc, char **argv, char **envp)
     const char *argv0 = NULL;
     int i;
     int ret;
-#ifdef CONFIG_TCG_PLUGIN
-    const char *plugin_filename = NULL;
-#endif
 
     if (argc <= 1)
         usage();
@@ -3070,12 +3068,10 @@ int main(int argc, char **argv, char **envp)
         }
     }
 
-#ifdef CONFIG_TCG_PLUGIN
     plugin_filename = plugin_filename ?: getenv("TCG_PLUGIN");
     if (plugin_filename) {
         tcg_plugin_load(plugin_filename);
     }
-#endif /* CONFIG_TCG_PLUGIN */
 
     /* init debug */
     cpu_set_log_filename(log_file);

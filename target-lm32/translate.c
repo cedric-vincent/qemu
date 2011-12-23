@@ -1054,6 +1054,8 @@ static void gen_intermediate_code_internal(CPUState *env,
 
     gen_icount_start();
     do {
+        tcg_plugin_register_info(dc->pc, env, tb);
+
         check_breakpoint(env, dc);
 
         if (search_pc) {

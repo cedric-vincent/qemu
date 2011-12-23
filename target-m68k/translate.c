@@ -2991,6 +2991,8 @@ gen_intermediate_code_internal(CPUState *env, TranslationBlock *tb,
 
     gen_icount_start();
     do {
+        tcg_plugin_register_info(dc->pc, env, tb);
+
         pc_offset = dc->pc - pc_start;
         gen_throws_exception = NULL;
         if (unlikely(!QTAILQ_EMPTY(&env->breakpoints))) {

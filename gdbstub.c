@@ -1126,7 +1126,7 @@ static int cpu_gdb_write_register(CPUState *env, uint8_t *mem_buf, int n)
         }
         break;
     case 72: /* fp, ignored */ break;
-    default: 
+    default:
 	if (n > 89)
 	    return 0;
 	/* Other registers are readonly.  Ignore writes.  */
@@ -2119,6 +2119,42 @@ static int gdb_handle_packet(GDBState *s, const char *line_buf)
     case 'q':
     case 'Q':
         /* parse any 'q' packets here */
+        if (strncmp(p,"qemu.st.", 8) == 0) {
+            /* check for ST proprietary command
+            */
+            const char *p_st= p+8;
+            if (strncmp(p_st,"version", 7) == 0) {
+            /* let the kernel debugger know this is a ST-qemu remote target
+             * */
+#if defined (TARGET_ARM)
+                snprintf(buf, sizeof(buf), "st-qemu-armv");
+#elif defined (TARGET_SH4)
+                snprintf(buf, sizeof(buf), "st-qemu-sh4");
+#endif
+                put_packet(s, buf);
+            }
+#if defined (TARGET_ARM)
+            else if ((strncmp(p_st,"mrc", 3) == 0) && (s->g_cpu == NULL)) {
+                    put_packet(s, "MRC NO G_CPU");
+            }
+            else if (strncmp(p_st,"mrc.c2_base0", 12) == 0) {
+                    addr = strtoull(p+21, NULL, 16);
+                    s->g_cpu->cp15.c2_base0 = addr ;
+                    snprintf(buf, sizeof(buf), "MRC cp15.c2_base0 set to %08x", addr);
+                    put_packet(s, buf);
+            }
+            else if (strncmp(p_st,"mrc.c13_context", 15) == 0) {
+                    addr = strtoull(p+24, NULL, 16);
+                    s->g_cpu->cp15.c13_context = addr ;
+                    snprintf(buf, sizeof(buf), "MRC cp15.c13_context set to %08x", addr);
+                    put_packet(s, buf);
+            }
+#endif
+            else
+                    put_packet(s, "ST command unknown.");
+            break;
+        } /*.st.*/
+        else
         if (!strcmp(p,"qemu.sstepbits")) {
             /* Query Breakpoint bit definitions */
             snprintf(buf, sizeof(buf), "ENABLE=%x,NOIRQ=%x,NOTIMER=%x",
@@ -2542,7 +2578,7 @@ gdb_handlesig (CPUState *env, int sig)
       snprintf(buf, sizeof(buf), "S%02x", target_signal_to_gdb (sig));
       put_packet(s, buf);
     }
-  /* put_packet() might have detected that the peer terminated the 
+  /* put_packet() might have detected that the peer terminated the
      connection.  */
   if (s->fd < 0)
       return sig;

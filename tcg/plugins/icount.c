@@ -33,9 +33,9 @@
 
 static uint64_t *icount_total;
 
-static void tb_helper_code(const TCGPluginInterface *tpi,
-                           TPIHelperInfo info, uint64_t address,
-                           uint64_t data1, uint64_t data2)
+static void pre_tb_helper_code(const TCGPluginInterface *tpi,
+                               TPIHelperInfo info, uint64_t address,
+                               uint64_t data1, uint64_t data2)
 {
     icount_total[info.cpu_index] += info.icount;
 }
@@ -54,7 +54,7 @@ void tpi_init(TCGPluginInterface *tpi)
 {
     TPI_INIT_VERSION_GENERIC(*tpi);
 
-    tpi->tb_helper_code = tb_helper_code;
+    tpi->pre_tb_helper_code = pre_tb_helper_code;
     tpi->cpus_stopped = cpus_stopped;
 
     icount_total = qemu_mallocz(tpi->nb_cpus * sizeof(uint64_t));

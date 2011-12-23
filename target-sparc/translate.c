@@ -4901,6 +4901,8 @@ static inline void gen_intermediate_code_internal(TranslationBlock * tb,
         max_insns = CF_COUNT_MASK;
     gen_icount_start();
     do {
+        tcg_plugin_register_info(dc->pc, env, tb);
+
         if (unlikely(!QTAILQ_EMPTY(&env->breakpoints))) {
             QTAILQ_FOREACH(bp, &env->breakpoints, entry) {
                 if (bp->pc == dc->pc) {
