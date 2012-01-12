@@ -2,8 +2,8 @@
 QEMU TCG Plugins
 ================
 
-:Version: 1.1
-:Date: 2011-07-22
+:Version: 1.2
+:Date: 2012-01-10
 :Copyright: STMicroelectronics
 
 .. sectnum::
@@ -70,21 +70,17 @@ profile
         [...]
 
 dineroIV-data
-    Print the address/size/cpu of the current emulated instruction (in
-    a per basic block basis) XXX data XXX in a format supported by
-    DineroIV, a highly configurable cache simulator::
+    Print the address/size/cpu of each loaded/stored data in a format
+    supported by DineroIV, a highly configurable cache simulator::
 
-        i 0x00008254 0x00000004 CPU #0
-        i 0x00008258 0x00000004 CPU #0
-        i 0x0000825c 0x00000004 CPU #0
-        i 0x00010ac0 0x00000004 CPU #0
-        i 0x00010ac4 0x00000004 CPU #0
-        i 0x00010ac8 0x00000004 CPU #0
+        w 0x000000000046ca20 0x00000004 (0x0000000000000000) CPU #0 0x0000000000401e3c
+        w 0x000000000046ca24 0x00000004 (0x0000000000000000) CPU #0 0x0000000000401e3e
+        r 0x000000000046ca1c 0x00000004 (0x0000000000000001) CPU #0 0x0000000000401e46
+        w 0x000000000046ca1c 0x00000004 (0x0000000000000000) CPU #0 0x0000000000401e4a
+        r 0x000000000046bae0 0x00000004 (0x000000000046ba14) CPU #0 0x0000000000401e5c
+        w 0x000000000046bb14 0x00000004 (0x00000000ffffffff) CPU #0 0x0000000000401e62
 
     This is a really good alternative to Cachegrind.
-
-callgrind
-    XXX Callgrind format so as to be visualized with KCachegrind.
 
 
 How to Use TCG Plugins?
@@ -143,7 +139,7 @@ TPI_SYMBOL_PC=name
     symbol ``name``. This option isn't supported yet.
 
 TPI_MUTEX_PROTECTED
-    XXX
+    Protect the call to ``pre_tb_helper_code`` with a mutex.
 
 Note that currently notification works in a per basic block basis,
 that is, the plugin is notified for any basic block that contains
@@ -231,12 +227,12 @@ the plugin, see next section for details.  Here is an example::
 Translation-Time Callbacks
 --------------------------
 
-There are currently five regular callbacks available, all are called
+There are currently four regular callbacks available, all are called
 at `translation-time`_, see `Two Kinds of Flow`_ for details.  In the
 following descriptions, the short terms *tb* and *opc* stand for
-*Translated Block* and *OpXXX Code* respectively.  Note that a given
-plugin doesn't have to provide all of these callbacks, they are *all*
-optional.
+*Translated Block* and *Operation Code* respectively.  Note that a
+given plugin doesn't have to provide all of these callbacks, they are
+*all* optional.
 
 
 cpus_stopped
@@ -271,29 +267,25 @@ declaration is::
     void after_gen_tb(const TCGPluginInterface *tpi)
 
 
-before_gen_opc
+after_gen_opc
 ``````````````
 
-XXX
+This function is called after a TCG opcode is emitted, and it is
+mainly used to insert TCG opcodes or calls to helpers.  Its
+declaration is::
 
+    void after_gen_opc(TCGOpcode opname, uint16_t *opcode, TCGArg *opargs, uint8_t nb_args);
 
-before_gen_opc
-``````````````
-
-XXX
 
 
 Callbacks for Predefined Helpers
 --------------------------------
 
-XXX two predefined helpers XXX *before* the execution of a translated
-block XXX *after* the execution of a translated opcode.  XXX XXX_data
-are called at `translation-time`_ XXX_code at `execution-time`_, see
-`Two Kinds of Flow`_ for details.  In the following descriptions, the
-short terms *tb* and *opc* stand for *Translated Block* and *OpXXX
-Code* respectively.  Note that a given plugin doesn't have to provide
-all of these callbacks, they are *all* optional.
-
+There are two predefined helpers, the first one is called *before* the
+execution of a translated block (`execution-time`_) and the second one
+is called *after* the translation of a opcode (`translation-time`_).
+Note that a given plugin doesn't have to provide all of these
+callbacks, they are *all* optional.
 
 
 pre_tb_helper_code
@@ -328,8 +320,8 @@ translation-time by the function ``pre_tb_helper_data()``, that means they
 keep their initial values (for a given basic block) during the
 execution.
 
-XXX explain why called before the execution of the translated block
-(safest + most useful)
+.. TODO: explain why called before the execution of the translated
+         block (safest + most useful)
 
 
 pre_tb_helper_data
@@ -351,21 +343,6 @@ on.  See `Two Kinds of Flow`_ for explanation.  Technically ``data1``
 and ``data2`` can hold anything and are particularly useful to
 optimize the execution of the ``pre_tb_helper_code()`` as described in
 section `Optimization`_.
-
-
-post_opc_helper_code
-````````````````````
-
-XXX
-
-XXX explain why called after the execution of the opcode (safest +
-value already set but can be overwritten).
-
-
-post_opc_helper_data
-````````````````````
-
-XXX debug_insn_start
 
 
 Two Kinds of Flow
@@ -461,23 +438,26 @@ Advices
 Deterministic code generation
 `````````````````````````````
 
-XXX::
+When an asynchronous event interrupt the execution of a translated
+block (typically an exception), QEMU has to re-translate the
+interrupted block to create a mapping between host PC addresses and
+guest PC addresses, so as to retrieve which was the *virtual* guest PC
+when the interruption occurred.  That means the translation process has
+to be deterministic to ensure the mapping created during the
+re-translation is the same as in the initial translation.
 
-    movi_i64 tmp6,$value
+For instance on x86_64 host, the TCG opcode ``movi_i64 tmp6,$value``
+can be translated to two different host instructions (with two
+different sizes) according to the value of its operands::
 
-XXX::
+    mov    $value,%ecx
 
-    0x601b7d66:  mov    $value,%ecx
+or::
 
-XXX::
+    movabs $value,%rcx
 
-    0x601b7d66:  movabs $value,%rcx
-
-
-Re-translated block
-```````````````````
-
-XXX
+In this case the re-translation may create a wrong guest-host PC
+mapping that might crash QEMU.
 
 
 Pointer
@@ -551,10 +531,16 @@ thread-safe since there's a chance that several threads increment the
 counter simultaneously in a non-atomic way.
 
 
-XXX
-```
+Limit of a TCG-based approach
+`````````````````````````````
 
-XXX Not all instruction are converted to TCG opcodes.
+There are two main limitations of an approach based on TCG: the first
+one is that not all guest instructions are converted to TCG opcodes,
+some are converted to a call to helper (typically floating point
+instructions).  The second limitation is that there's no easy way to
+handle a guest instruction while manipulating its TCG translation
+(note that one guest instruction is likely composed of several TCG
+opcodes).
 
 
 Generic Plugin
@@ -569,8 +555,6 @@ when a plugin declares itself as generic, these two fields are always
 and ``icount-inlined`` basically do the same thing but this latter
 isn't generic because it can't be used with a version of QEMU built
 for another CPU and/or mode.
-
-XXX tcg_gen XXX
 
 
 Custom Helper
@@ -680,34 +664,41 @@ explained in a previous section::
 Performance Impact
 ==================
 
+How to reproduce
+----------------
 
-* ARMedSlack 13.37
+=============  ================================
+host distro    Slackware64 13.37
+guest distro   ARMedSlack 13.37
+guest program  Links 2.3pre1 [#]_
+input data     off-line version of a blog post_
+plugins        both per-block and per-opcode
+=============  ================================
 
-* Links 2.3pre1 (mono-threaded console-based web-browser)
+.. [#] mono-threaded console-based web-browser
+.. _post: http://perl6advent.wordpress.com/2011/12/14/meta-programming-what-why-and-how/
 
-* off-line version of a blog post_, as saved by Firefox 9.0b2
 
-* trace (XXX block based) and dineroIV-data (instruction based)
+Results
+-------
 
-.. _post http://perl6advent.wordpress.com/2011/12/14/meta-programming-what-why-and-how/
+======================================  ====================
+Instrumentation                         Slowdown
+======================================  ====================
+none (reference)                                          0%
+inlined                                                  ~3%
+helper does nothing                                    ~ 25%
+helper does nothing, mutex protected             100% ~ 200%
+helper calls getsymbol() @ translation             25% ~ 30%
+helper calls getsymbol() @ execution                  ~ 900%
+helper prints a in file @ execution            3000% ~ 5000%
+======================================  ====================
 
-================================================  ====================
-instrumentation XXX                                           slowdown
-================================================  ====================
-none (reference)                                                    0%
-inlined                                                           XXX%
-helper that does nothing                                         ~ 25%
-helper that does nothing XXX protected a mutex             100% ~ 200%
-helper that calls getsymbol() @ translation                      ~ 30%
-helper that calls getsymbol() @ execution                       ~ 900%
-helper that prints a trace in file                       3000% ~ 5000%
-================================================  ====================
 
-This is *not* a benchmark XXX don't use it to conclude too much, for
-instance XXX not conclude mutext protected XXX is twice as slow XXX
-(third row).  If you want to know the impact of XXX, just benchmark it
-by yourself!
+Conclusion
+----------
 
-My conclusion is XXX printing a trace consumes a lot of CPU time, it
-could be avoided XXX dineroIV-data directly to the cache simulator
-instead of XXX a file.
+Don't take these results to conclude about the TCG plugin support
+since, as you can see, the slowdown heavily depends on the kind of
+operations made in the plugin itself: file IOs, execution-time
+vs. translation-time, inlining, mutex protection, ...
