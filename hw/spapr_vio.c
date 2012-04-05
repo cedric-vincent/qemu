@@ -32,6 +32,7 @@
 
 #include "hw/spapr.h"
 #include "hw/spapr_vio.h"
+#include "hw/xics.h"
 
 #ifdef CONFIG_FDT
 #include <libfdt.h>
@@ -51,6 +52,10 @@
 static struct BusInfo spapr_vio_bus_info = {
     .name       = "spapr-vio",
     .size       = sizeof(VIOsPAPRBus),
+    .props = (Property[]) {
+        DEFINE_PROP_UINT32("irq", VIOsPAPRDevice, vio_irq_num, 0), \
+        DEFINE_PROP_END_OF_LIST(),
+    },
 };
 
 VIOsPAPRDevice *spapr_vio_find_by_reg(VIOsPAPRBus *bus, uint32_t reg)
@@ -58,14 +63,27 @@ VIOsPAPRDevice *spapr_vio_find_by_reg(VIOsPAPRBus *bus, uint32_t reg)
     DeviceState *qdev;
     VIOsPAPRDevice *dev = NULL;
 
-    QLIST_FOREACH(qdev, &bus->bus.children, sibling) {
+    QTAILQ_FOREACH(qdev, &bus->bus.children, sibling) {
         dev = (VIOsPAPRDevice *)qdev;
         if (dev->reg == reg) {
-            break;
+            return dev;
         }
     }
 
-    return dev;
+    return NULL;
+}
+
+static char *vio_format_dev_name(VIOsPAPRDevice *dev)
+{
+    VIOsPAPRDeviceInfo *info = (VIOsPAPRDeviceInfo *)dev->qdev.info;
+    char *name;
+
+    /* Device tree style name device@reg */
+    if (asprintf(&name, "%s@%x", info->dt_name, dev->reg) < 0) {
+        return NULL;
+    }
+
+    return name;
 }
 
 #ifdef CONFIG_FDT
@@ -73,15 +91,21 @@ static int vio_make_devnode(VIOsPAPRDevice *dev,
                             void *fdt)
 {
     VIOsPAPRDeviceInfo *info = (VIOsPAPRDeviceInfo *)dev->qdev.info;
-    int vdevice_off, node_off;
-    int ret;
+    int vdevice_off, node_off, ret;
+    char *dt_name;
 
     vdevice_off = fdt_path_offset(fdt, "/vdevice");
     if (vdevice_off < 0) {
         return vdevice_off;
     }
 
-    node_off = fdt_add_subnode(fdt, vdevice_off, dev->qdev.id);
+    dt_name = vio_format_dev_name(dev);
+    if (!dt_name) {
+        return -ENOMEM;
+    }
+
+    node_off = fdt_add_subnode(fdt, vdevice_off, dt_name);
+    free(dt_name);
     if (node_off < 0) {
         return node_off;
     }
@@ -160,7 +184,13 @@ static void rtce_init(VIOsPAPRDevice *dev)
         * sizeof(VIOsPAPR_RTCE);
 
     if (size) {
-        dev->rtce_table = qemu_mallocz(size);
+        dev->rtce_table = kvmppc_create_spapr_tce(dev->reg,
+                                                  dev->rtce_window_size,
+                                                  &dev->kvmtce_fd);
+
+        if (!dev->rtce_table) {
+            dev->rtce_table = g_malloc0(size);
+        }
     }
 }
 
@@ -583,7 +613,7 @@ static void rtas_quiesce(sPAPREnvironment *spapr, uint32_t token,
         return;
     }
 
-    QLIST_FOREACH(qdev, &bus->bus.children, sibling) {
+    QTAILQ_FOREACH(qdev, &bus->bus.children, sibling) {
         dev = (VIOsPAPRDevice *)qdev;
         spapr_vio_quiesce_one(dev);
     }
@@ -597,11 +627,19 @@ static int spapr_vio_busdev_init(DeviceState *qdev, DeviceInfo *qinfo)
     VIOsPAPRDevice *dev = (VIOsPAPRDevice *)qdev;
     char *id;
 
-    if (asprintf(&id, "%s@%x", info->dt_name, dev->reg) < 0) {
-        return -1;
+    /* Don't overwrite ids assigned on the command line */
+    if (!dev->qdev.id) {
+        id = vio_format_dev_name(dev);
+        if (!id) {
+            return -1;
+        }
+        dev->qdev.id = id;
     }
 
-    dev->qdev.id = id;
+    dev->qirq = spapr_allocate_irq(dev->vio_irq_num, &dev->vio_irq_num);
+    if (!dev->qirq) {
+        return -1;
+    }
 
     rtce_init(dev);
 
@@ -711,21 +749,95 @@ static void spapr_vio_register_devices(void)
 device_init(spapr_vio_register_devices)
 
 #ifdef CONFIG_FDT
+static int compare_reg(const void *p1, const void *p2)
+{
+    VIOsPAPRDevice const *dev1, *dev2;
+
+    dev1 = (VIOsPAPRDevice *)*(DeviceState **)p1;
+    dev2 = (VIOsPAPRDevice *)*(DeviceState **)p2;
+
+    if (dev1->reg < dev2->reg) {
+        return -1;
+    }
+    if (dev1->reg == dev2->reg) {
+        return 0;
+    }
+
+    /* dev1->reg > dev2->reg */
+    return 1;
+}
+
 int spapr_populate_vdevice(VIOsPAPRBus *bus, void *fdt)
 {
-    DeviceState *qdev;
-    int ret = 0;
+    DeviceState *qdev, **qdevs;
+    int i, num, ret = 0;
 
-    QLIST_FOREACH(qdev, &bus->bus.children, sibling) {
-        VIOsPAPRDevice *dev = (VIOsPAPRDevice *)qdev;
+    /* Count qdevs on the bus list */
+    num = 0;
+    QTAILQ_FOREACH(qdev, &bus->bus.children, sibling) {
+        num++;
+    }
+
+    /* Copy out into an array of pointers */
+    qdevs = g_malloc(sizeof(qdev) * num);
+    num = 0;
+    QTAILQ_FOREACH(qdev, &bus->bus.children, sibling) {
+        qdevs[num++] = qdev;
+    }
+
+    /* Sort the array */
+    qsort(qdevs, num, sizeof(qdev), compare_reg);
+
+    /* Hack alert. Give the devices to libfdt in reverse order, we happen
+     * to know that will mean they are in forward order in the tree. */
+    for (i = num - 1; i >= 0; i--) {
+        VIOsPAPRDevice *dev = (VIOsPAPRDevice *)(qdevs[i]);
 
         ret = vio_make_devnode(dev, fdt);
 
         if (ret < 0) {
-            return ret;
+            goto out;
         }
     }
 
-    return 0;
+    ret = 0;
+out:
+    free(qdevs);
+
+    return ret;
+}
+
+int spapr_populate_chosen_stdout(void *fdt, VIOsPAPRBus *bus)
+{
+    VIOsPAPRDevice *dev;
+    char *name, *path;
+    int ret, offset;
+
+    dev = spapr_vty_get_default(bus);
+    if (!dev)
+        return 0;
+
+    offset = fdt_path_offset(fdt, "/chosen");
+    if (offset < 0) {
+        return offset;
+    }
+
+    name = vio_format_dev_name(dev);
+    if (!name) {
+        return -ENOMEM;
+    }
+
+    if (asprintf(&path, "/vdevice/%s", name) < 0) {
+        path = NULL;
+        ret = -ENOMEM;
+        goto out;
+    }
+
+    ret = fdt_setprop_string(fdt, offset, "linux,stdout-path", path);
+out:
+    free(name);
+    free(path);
+
+    return ret;
 }
 #endif /* CONFIG_FDT */

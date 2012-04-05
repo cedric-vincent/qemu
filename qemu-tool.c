@@ -15,6 +15,7 @@
 #include "monitor.h"
 #include "qemu-timer.h"
 #include "qemu-log.h"
+#include "migration.h"
 
 #include <sys/time.h>
 
@@ -28,10 +29,6 @@ struct QEMUBH
     QEMUBHFunc *cb;
     void *opaque;
 };
-
-void qemu_service_io(void)
-{
-}
 
 Monitor *cur_mon;
 
@@ -76,12 +73,12 @@ void qemu_notify_event(void)
 QEMUTimer *qemu_new_timer(QEMUClock *clock, int scale,
                           QEMUTimerCB *cb, void *opaque)
 {
-    return qemu_malloc(1);
+    return g_malloc(1);
 }
 
 void qemu_free_timer(QEMUTimer *ts)
 {
-    qemu_free(ts);
+    g_free(ts);
 }
 
 void qemu_del_timer(QEMUTimer *ts)
@@ -95,4 +92,12 @@ void qemu_mod_timer(QEMUTimer *ts, int64_t expire_time)
 int64_t qemu_get_clock_ns(QEMUClock *clock)
 {
     return 0;
+}
+
+void migrate_add_blocker(Error *reason)
+{
+}
+
+void migrate_del_blocker(Error *reason)
+{
 }

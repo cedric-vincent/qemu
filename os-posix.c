@@ -128,12 +128,12 @@ char *os_find_datadir(const char *argv0)
 
     max_len = strlen(dir) +
         MAX(strlen(SHARE_SUFFIX), strlen(BUILD_SUFFIX)) + 1;
-    res = qemu_mallocz(max_len);
+    res = g_malloc0(max_len);
     snprintf(res, max_len, "%s%s", dir, SHARE_SUFFIX);
     if (access(res, R_OK)) {
         snprintf(res, max_len, "%s%s", dir, BUILD_SUFFIX);
         if (access(res, R_OK)) {
-            qemu_free(res);
+            g_free(res);
             res = NULL;
         }
     }
@@ -372,13 +372,16 @@ int qemu_create_pidfile(const char *filename)
         return -1;
     }
     if (lockf(fd, F_TLOCK, 0) == -1) {
+        close(fd);
         return -1;
     }
     len = snprintf(buffer, sizeof(buffer), FMT_pid "\n", getpid());
     if (write(fd, buffer, len) != len) {
+        close(fd);
         return -1;
     }
 
+    close(fd);
     return 0;
 }
 

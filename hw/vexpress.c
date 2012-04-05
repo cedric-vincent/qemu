@@ -41,7 +41,7 @@ static void vexpress_a9_init(ram_addr_t ram_size,
 {
     CPUState *env = NULL;
     ram_addr_t ram_offset, vram_offset, sram_offset;
-    DeviceState *dev, *sysctl;
+    DeviceState *dev, *sysctl, *pl041;
     SysBusDevice *busdev;
     qemu_irq *irqp;
     qemu_irq pic[64];
@@ -118,6 +118,11 @@ static void vexpress_a9_init(ram_addr_t ram_size,
     /* 0x10001000 SP810 system control */
     /* 0x10002000 serial bus PCI */
     /* 0x10004000 PL041 audio */
+    pl041 = qdev_create(NULL, "pl041");
+    qdev_prop_set_uint32(pl041, "nc_fifo_depth", 512);
+    qdev_init_nofail(pl041);
+    sysbus_mmio_map(sysbus_from_qdev(pl041), 0, 0x10004000);
+    sysbus_connect_irq(sysbus_from_qdev(pl041), 0, pic[11]);
 
     dev = sysbus_create_varargs("pl181", 0x10005000, pic[9], pic[10], NULL);
     /* Wire up MMC card detect and read-only signals */
@@ -150,7 +155,7 @@ static void vexpress_a9_init(ram_addr_t ram_size,
     /* Daughterboard peripherals : 0x10020000 .. 0x20000000 */
 
     /* 0x10020000 PL111 CLCD (daughterboard) */
-    sysbus_create_simple("pl110", 0x10020000, pic[44]);
+    sysbus_create_simple("pl111", 0x10020000, pic[44]);
 
     /* 0x10060000 AXI RAM */
     /* 0x100e0000 PL341 Dynamic Memory Controller */

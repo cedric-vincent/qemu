@@ -47,7 +47,7 @@ void do_interrupt (CPUState *env)
 }
 
 int cpu_cris_handle_mmu_fault(CPUState * env, target_ulong address, int rw,
-                             int mmu_idx, int is_softmmu)
+                              int mmu_idx)
 {
 	env->exception_index = 0xaa;
 	env->pregs[PR_EDA] = address;
@@ -68,7 +68,7 @@ static void cris_shift_ccs(CPUState *env)
 }
 
 int cpu_cris_handle_mmu_fault (CPUState *env, target_ulong address, int rw,
-                               int mmu_idx, int is_softmmu)
+                               int mmu_idx)
 {
 	struct cris_mmu_result res;
 	int prot, miss;
@@ -104,10 +104,9 @@ int cpu_cris_handle_mmu_fault (CPUState *env, target_ulong address, int rw,
                 r = 0;
 	}
 	if (r > 0)
-		D_LOG("%s returns %d irqreq=%x addr=%x"
-			  " phy=%x ismmu=%d vec=%x pc=%x\n", 
-			  __func__, r, env->interrupt_request, 
-			  address, res.phy, is_softmmu, res.bf_vec, env->pc);
+            D_LOG("%s returns %d irqreq=%x addr=%x phy=%x vec=%x pc=%x\n",
+                  __func__, r, env->interrupt_request, address, res.phy,
+                  res.bf_vec, env->pc);
 	return r;
 }
 
@@ -158,6 +157,7 @@ static void do_interruptv10(CPUState *env)
 	/* Now that we are in kernel mode, load the handlers address.  */
 	env->pc = ldl_code(env->pregs[PR_EBP] + ex_vec * 4);
 	env->locked_irq = 1;
+	env->pregs[PR_CCS] |= F_FLAG_V10; /* set F.  */
 
 	qemu_log_mask(CPU_LOG_INT, "%s isr=%x vec=%x ccs=%x pid=%d erp=%x\n", 
 		      __func__, env->pc, ex_vec, 

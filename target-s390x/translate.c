@@ -830,7 +830,7 @@ static inline void gen_goto_tb(DisasContext *s, int tb_num, target_ulong pc)
         /* jump to same page: we can use a direct jump */
         tcg_gen_goto_tb(tb_num);
         tcg_gen_movi_i64(psw_addr, pc);
-        tcg_gen_exit_tb((long)tb + tb_num);
+        tcg_gen_exit_tb((tcg_target_long)tb + tb_num);
     } else {
         /* jump to another page: currently not optimized */
         tcg_gen_movi_i64(psw_addr, pc);
@@ -2214,6 +2214,10 @@ static void disas_ed(DisasContext *s, int op, int r1, int x2, int b2, int d2,
     addr = get_address(s, x2, b2, d2);
     tmp_r1 = tcg_const_i32(r1);
     switch (op) {
+    case 0x4: /* LDEB R1,D2(X2,B2) [RXE] */
+        potential_page_fault(s);
+        gen_helper_ldeb(tmp_r1, addr);
+        break;
     case 0x5: /* LXDB R1,D2(X2,B2) [RXE] */
         potential_page_fault(s);
         gen_helper_lxdb(tmp_r1, addr);

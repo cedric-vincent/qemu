@@ -62,7 +62,7 @@ typedef struct OHCIPort {
 typedef struct {
     USBBus bus;
     qemu_irq irq;
-    int mem;
+    MemoryRegion mem;
     int num_ports;
     const char *name;
 
@@ -150,7 +150,7 @@ static void ohci_async_cancel_device(OHCIState *ohci, USBDevice *dev);
 #define OHCI_TD_DI_SHIFT  21
 #define OHCI_TD_DI_MASK   (7<<OHCI_TD_DI_SHIFT)
 #define OHCI_TD_T0        (1<<24)
-#define OHCI_TD_T1        (1<<24)
+#define OHCI_TD_T1        (1<<25)
 #define OHCI_TD_EC_SHIFT  26
 #define OHCI_TD_EC_MASK   (3<<OHCI_TD_EC_SHIFT)
 #define OHCI_TD_CC_SHIFT  28
@@ -448,8 +448,8 @@ static void ohci_reset(void *opaque)
       {
         port = &ohci->rhport[i];
         port->ctrl = 0;
-        if (port->port.dev) {
-            usb_attach(&port->port, port->port.dev);
+        if (port->port.dev && port->port.dev->attached) {
+            usb_reset(&port->port);
         }
       }
     if (ohci->async_td) {
@@ -777,18 +777,17 @@ static int ohci_service_iso_td(OHCIState *ohci, struct ohci_ed *ed,
     }
 
     if (completion) {
-        ret = ohci->usb_packet.len;
+        ret = ohci->usb_packet.result;
     } else {
         ret = USB_RET_NODEV;
         for (i = 0; i < ohci->num_ports; i++) {
             dev = ohci->rhport[i].port.dev;
             if ((ohci->rhport[i].ctrl & OHCI_PORT_PES) == 0)
                 continue;
-            ohci->usb_packet.pid = pid;
-            ohci->usb_packet.devaddr = OHCI_BM(ed->flags, ED_FA);
-            ohci->usb_packet.devep = OHCI_BM(ed->flags, ED_EN);
-            ohci->usb_packet.data = ohci->usb_buf;
-            ohci->usb_packet.len = len;
+            usb_packet_setup(&ohci->usb_packet, pid,
+                             OHCI_BM(ed->flags, ED_FA),
+                             OHCI_BM(ed->flags, ED_EN));
+            usb_packet_addbuf(&ohci->usb_packet, ohci->usb_buf, len);
             ret = usb_handle_packet(dev, &ohci->usb_packet);
             if (ret != USB_RET_NODEV)
                 break;
@@ -873,7 +872,7 @@ static int ohci_service_iso_td(OHCIState *ohci, struct ohci_ed *ed,
 static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
 {
     int dir;
-    size_t len = 0;
+    size_t len = 0, pktlen = 0;
 #ifdef DEBUG_PACKET
     const char *str = NULL;
 #endif
@@ -941,25 +940,35 @@ static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
             len = (td.be - td.cbp) + 1;
         }
 
-        if (len && dir != OHCI_TD_DIR_IN && !completion) {
-            ohci_copy_td(ohci, &td, ohci->usb_buf, len, 0);
+        pktlen = len;
+        if (len && dir != OHCI_TD_DIR_IN) {
+            /* The endpoint may not allow us to transfer it all now */
+            pktlen = (ed->flags & OHCI_ED_MPS_MASK) >> OHCI_ED_MPS_SHIFT;
+            if (pktlen > len) {
+                pktlen = len;
+            }
+            if (!completion) {
+                ohci_copy_td(ohci, &td, ohci->usb_buf, pktlen, 0);
+            }
         }
     }
 
     flag_r = (td.flags & OHCI_TD_R) != 0;
 #ifdef DEBUG_PACKET
-    DPRINTF(" TD @ 0x%.8x %" PRId64 " bytes %s r=%d cbp=0x%.8x be=0x%.8x\n",
-            addr, (int64_t)len, str, flag_r, td.cbp, td.be);
+    DPRINTF(" TD @ 0x%.8x %" PRId64 " of %" PRId64
+            " bytes %s r=%d cbp=0x%.8x be=0x%.8x\n",
+            addr, (int64_t)pktlen, (int64_t)len, str, flag_r, td.cbp, td.be);
 
-    if (len > 0 && dir != OHCI_TD_DIR_IN) {
+    if (pktlen > 0 && dir != OHCI_TD_DIR_IN) {
         DPRINTF("  data:");
-        for (i = 0; i < len; i++)
+        for (i = 0; i < pktlen; i++) {
             printf(" %.2x", ohci->usb_buf[i]);
+        }
         DPRINTF("\n");
     }
 #endif
     if (completion) {
-        ret = ohci->usb_packet.len;
+        ret = ohci->usb_packet.result;
         ohci->async_td = 0;
         ohci->async_complete = 0;
     } else {
@@ -980,11 +989,10 @@ static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
 #endif
                 return 1;
             }
-            ohci->usb_packet.pid = pid;
-            ohci->usb_packet.devaddr = OHCI_BM(ed->flags, ED_FA);
-            ohci->usb_packet.devep = OHCI_BM(ed->flags, ED_EN);
-            ohci->usb_packet.data = ohci->usb_buf;
-            ohci->usb_packet.len = len;
+            usb_packet_setup(&ohci->usb_packet, pid,
+                             OHCI_BM(ed->flags, ED_FA),
+                             OHCI_BM(ed->flags, ED_EN));
+            usb_packet_addbuf(&ohci->usb_packet, ohci->usb_buf, pktlen);
             ret = usb_handle_packet(dev, &ohci->usb_packet);
             if (ret != USB_RET_NODEV)
                 break;
@@ -1007,20 +1015,20 @@ static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
             DPRINTF("\n");
 #endif
         } else {
-            ret = len;
+            ret = pktlen;
         }
     }
 
     /* Writeback */
-    if (ret == len || (dir == OHCI_TD_DIR_IN && ret >= 0 && flag_r)) {
+    if (ret == pktlen || (dir == OHCI_TD_DIR_IN && ret >= 0 && flag_r)) {
         /* Transmission succeeded.  */
         if (ret == len) {
             td.cbp = 0;
         } else {
-            td.cbp += ret;
             if ((td.cbp & 0xfff) + ret > 0xfff) {
-                td.cbp &= 0xfff;
-                td.cbp |= td.be & ~0xfff;
+                td.cbp = (td.be & ~0xfff) + ((td.cbp + ret) & 0xfff);
+            } else {
+                td.cbp += ret;
             }
         }
         td.flags |= OHCI_TD_T1;
@@ -1028,6 +1036,12 @@ static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
         OHCI_SET_BM(td.flags, TD_CC, OHCI_CC_NOERROR);
         OHCI_SET_BM(td.flags, TD_EC, 0);
 
+        if ((dir != OHCI_TD_DIR_IN) && (ret != len)) {
+            /* Partial packet transfer: TD not ready to retire yet */
+            goto exit_no_retire;
+        }
+
+        /* Setting ED_C is part of the TD retirement process */
         ed->head &= ~OHCI_ED_C;
         if (td.flags & OHCI_TD_T0)
             ed->head |= OHCI_ED_C;
@@ -1068,6 +1082,7 @@ static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
     i = OHCI_BM(td.flags, TD_DI);
     if (i < ohci->done_count)
         ohci->done_count = i;
+exit_no_retire:
     ohci_put_td(ohci, addr, &td);
     return OHCI_BM(td.flags, TD_CC) != OHCI_CC_NOERROR;
 }
@@ -1440,12 +1455,12 @@ static void ohci_port_set_status(OHCIState *ohci, int portnum, uint32_t val)
     return;
 }
 
-static uint32_t ohci_mem_read(void *ptr, target_phys_addr_t addr)
+static uint64_t ohci_mem_read(void *opaque,
+                              target_phys_addr_t addr,
+                              unsigned size)
 {
-    OHCIState *ohci = ptr;
+    OHCIState *ohci = opaque;
     uint32_t retval;
-
-    addr &= 0xff;
 
     /* Only aligned reads are allowed on OHCI */
     if (addr & 3) {
@@ -1563,11 +1578,12 @@ static uint32_t ohci_mem_read(void *ptr, target_phys_addr_t addr)
     return retval;
 }
 
-static void ohci_mem_write(void *ptr, target_phys_addr_t addr, uint32_t val)
+static void ohci_mem_write(void *opaque,
+                           target_phys_addr_t addr,
+                           uint64_t val,
+                           unsigned size)
 {
-    OHCIState *ohci = ptr;
-
-    addr &= 0xff;
+    OHCIState *ohci = opaque;
 
     /* Only aligned reads are allowed on OHCI */
     if (addr & 3) {
@@ -1697,18 +1713,10 @@ static void ohci_async_cancel_device(OHCIState *ohci, USBDevice *dev)
     }
 }
 
-/* Only dword reads are defined on OHCI register space */
-static CPUReadMemoryFunc * const ohci_readfn[3]={
-    ohci_mem_read,
-    ohci_mem_read,
-    ohci_mem_read
-};
-
-/* Only dword writes are defined on OHCI register space */
-static CPUWriteMemoryFunc * const ohci_writefn[3]={
-    ohci_mem_write,
-    ohci_mem_write,
-    ohci_mem_write
+static const MemoryRegionOps ohci_mem_ops = {
+    .read = ohci_mem_read,
+    .write = ohci_mem_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
 static USBPortOps ohci_port_ops = {
@@ -1764,11 +1772,11 @@ static int usb_ohci_init(OHCIState *ohci, DeviceState *dev,
         }
     }
 
-    ohci->mem = cpu_register_io_memory(ohci_readfn, ohci_writefn, ohci,
-                                       DEVICE_LITTLE_ENDIAN);
+    memory_region_init_io(&ohci->mem, &ohci_mem_ops, ohci, "ohci", 256);
     ohci->localmem_base = localmem_base;
 
     ohci->name = dev->info->name;
+    usb_packet_init(&ohci->usb_packet);
 
     ohci->async_td = 0;
     qemu_register_reset(ohci_reset, ohci);
@@ -1789,8 +1797,7 @@ static int usb_ohci_initfn_pci(struct PCIDevice *dev)
     OHCIPCIState *ohci = DO_UPCAST(OHCIPCIState, pci_dev, dev);
 
     ohci->pci_dev.config[PCI_CLASS_PROG] = 0x10; /* OHCI */
-    /* TODO: RST# value should be 0. */
-    ohci->pci_dev.config[PCI_INTERRUPT_PIN] = 0x01; /* interrupt pin 1 */
+    ohci->pci_dev.config[PCI_INTERRUPT_PIN] = 0x01; /* interrupt pin A */
 
     if (usb_ohci_init(&ohci->state, &dev->qdev, ohci->num_ports, 0,
                       ohci->masterbus, ohci->firstport) != 0) {
@@ -1799,7 +1806,7 @@ static int usb_ohci_initfn_pci(struct PCIDevice *dev)
     ohci->state.irq = ohci->pci_dev.irq[0];
 
     /* TODO: avoid cast below by using dev */
-    pci_register_bar_simple(&ohci->pci_dev, 0, 256, 0, ohci->state.mem);
+    pci_register_bar(&ohci->pci_dev, 0, 0, &ohci->state.mem);
     return 0;
 }
 
@@ -1822,7 +1829,7 @@ static int ohci_init_pxa(SysBusDevice *dev)
     /* Cannot fail as we pass NULL for masterbus */
     usb_ohci_init(&s->ohci, &dev->qdev, s->num_ports, s->dma_offset, NULL, 0);
     sysbus_init_irq(dev, &s->ohci.irq);
-    sysbus_init_mmio(dev, 0x1000, s->ohci.mem);
+    sysbus_init_mmio_region(dev, &s->ohci.mem);
 
     return 0;
 }

@@ -224,6 +224,7 @@ typedef struct x86_def_t {
     int family;
     int model;
     int stepping;
+    int tsc_khz;
     uint32_t features, ext_features, ext2_features, ext3_features;
     uint32_t kvm_features, svm_features;
     uint32_t xlevel;
@@ -599,7 +600,7 @@ static int cpu_x86_find_by_name(x86_def_t *x86_cpu_def, const char *cpu_model)
     unsigned int i;
     x86_def_t *def;
 
-    char *s = strdup(cpu_model);
+    char *s = g_strdup(cpu_model);
     char *featurestr, *name = strtok(s, ",");
     /* Features to be added*/
     uint32_t plus_features = 0, plus_ext_features = 0;
@@ -612,9 +613,9 @@ static int cpu_x86_find_by_name(x86_def_t *x86_cpu_def, const char *cpu_model)
     uint32_t numvalue;
 
     for (def = x86_defs; def; def = def->next)
-        if (!strcmp(name, def->name))
+        if (name && !strcmp(name, def->name))
             break;
-    if (kvm_enabled() && strcmp(name, "host") == 0) {
+    if (kvm_enabled() && name && strcmp(name, "host") == 0) {
         cpu_x86_fill_host(x86_cpu_def);
     } else if (!def) {
         goto error;
@@ -704,6 +705,17 @@ static int cpu_x86_find_by_name(x86_def_t *x86_cpu_def, const char *cpu_model)
             } else if (!strcmp(featurestr, "model_id")) {
                 pstrcpy(x86_cpu_def->model_id, sizeof(x86_cpu_def->model_id),
                         val);
+            } else if (!strcmp(featurestr, "tsc_freq")) {
+                int64_t tsc_freq;
+                char *err;
+
+                tsc_freq = strtosz_suffix_unit(val, &err,
+                                               STRTOSZ_DEFSUFFIX_B, 1000);
+                if (tsc_freq < 0 || *err) {
+                    fprintf(stderr, "bad numerical value %s\n", val);
+                    goto error;
+                }
+                x86_cpu_def->tsc_khz = tsc_freq / 1000;
             } else {
                 fprintf(stderr, "unrecognized feature %s\n", featurestr);
                 goto error;
@@ -734,11 +746,11 @@ static int cpu_x86_find_by_name(x86_def_t *x86_cpu_def, const char *cpu_model)
         if (check_features_against_host(x86_cpu_def) && enforce_cpuid)
             goto error;
     }
-    free(s);
+    g_free(s);
     return 0;
 
 error:
-    free(s);
+    g_free(s);
     return -1;
 }
 
@@ -872,6 +884,7 @@ int cpu_x86_register (CPUX86State *env, const char *cpu_model)
     env->cpuid_svm_features = def->svm_features;
     env->cpuid_ext4_features = def->ext4_features;
     env->cpuid_xlevel2 = def->xlevel2;
+    env->tsc_khz = def->tsc_khz;
     if (!kvm_enabled()) {
         env->cpuid_features &= TCG_FEATURES;
         env->cpuid_ext_features &= TCG_EXT_FEATURES;
@@ -956,7 +969,8 @@ static int cpudef_setfield(const char *name, const char *str, void *opaque)
     int err = 0;
 
     if (!strcmp(name, "name")) {
-        def->name = strdup(str);
+        g_free((void *)def->name);
+        def->name = g_strdup(str);
     } else if (!strcmp(name, "model_id")) {
         strncpy(def->model_id, str, sizeof (def->model_id));
     } else if (!strcmp(name, "level")) {
@@ -996,7 +1010,7 @@ static int cpudef_setfield(const char *name, const char *str, void *opaque)
  */
 static int cpudef_register(QemuOpts *opts, void *opaque)
 {
-    x86_def_t *def = qemu_mallocz(sizeof (x86_def_t));
+    x86_def_t *def = g_malloc0(sizeof (x86_def_t));
 
     qemu_opt_foreach(opts, cpudef_setfield, def, 1);
     def->next = x86_defs;

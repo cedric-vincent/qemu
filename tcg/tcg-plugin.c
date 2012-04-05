@@ -77,12 +77,12 @@ void tcg_plugin_load(const char *name)
         size_t size = strlen(format) + strlen(name);
         int status;
 
-        path = qemu_mallocz(size);
+        path = g_malloc0(size);
         snprintf(path, size, format, name);
 
         status = access(path, F_OK);
         if (status) {
-            qemu_free(path);
+            g_free(path);
             path = NULL;
         }
     }
@@ -247,7 +247,7 @@ void tcg_plugin_load(const char *name)
 
 error:
     if (path)
-        qemu_free(path);
+        g_free(path);
 
     if (!done) {
         memset(&tpi, 0, sizeof(tpi));

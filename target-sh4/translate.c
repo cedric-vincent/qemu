@@ -279,7 +279,7 @@ CPUSH4State *cpu_sh4_init(const char *cpu_model)
     def = cpu_sh4_find_by_name(cpu_model);
     if (!def)
 	return NULL;
-    env = qemu_mallocz(sizeof(CPUSH4State));
+    env = g_malloc0(sizeof(CPUSH4State));
     env->features = def->features;
     cpu_exec_init(env);
     env->movcal_backup_tail = &(env->movcal_backup);
@@ -1652,18 +1652,10 @@ static void _decode_opc(DisasContext * ctx)
 	}
 	return;
     case 0x00a3:		/* ocbp @Rn */
-	{
-	    TCGv dummy = tcg_temp_new();
-	    tcg_gen_qemu_ld32s(dummy, REG(B11_8), ctx->memidx);
-	    tcg_temp_free(dummy);
-	}
-	return;
     case 0x00b3:		/* ocbwb @Rn */
-	{
-	    TCGv dummy = tcg_temp_new();
-	    tcg_gen_qemu_ld32s(dummy, REG(B11_8), ctx->memidx);
-	    tcg_temp_free(dummy);
-	}
+        /* These instructions are supposed to do nothing in case of
+           a cache miss. Given that we only partially emulate caches
+           it is safe to simply ignore them. */
 	return;
     case 0x0083:		/* pref @Rn */
 	return;

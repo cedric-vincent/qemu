@@ -572,6 +572,7 @@ int unix_connect_opts(QemuOpts *opts)
     snprintf(un.sun_path, sizeof(un.sun_path), "%s", path);
     if (connect(sock, (struct sockaddr*) &un, sizeof(un)) < 0) {
         fprintf(stderr, "connect(unix:%s): %s\n", path, strerror(errno));
+        close(sock);
 	return -1;
     }
 
@@ -593,10 +594,10 @@ int unix_listen(const char *str, char *ostr, int olen)
     if (optstr) {
         len = optstr - str;
         if (len) {
-            path = qemu_malloc(len+1);
+            path = g_malloc(len+1);
             snprintf(path, len+1, "%.*s", len, str);
             qemu_opt_set(opts, "path", path);
-            qemu_free(path);
+            g_free(path);
         }
     } else {
         qemu_opt_set(opts, "path", str);

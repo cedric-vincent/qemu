@@ -15,6 +15,7 @@
 #include "qdict.h"
 #include "qstring.h"
 #include "qemu-error.h"
+#include "error.h"
 #include <stdarg.h>
 
 typedef struct QErrorStringTable {
@@ -39,6 +40,7 @@ QString *qerror_human(const QError *qerror);
 void qerror_print(QError *qerror);
 void qerror_report_internal(const char *file, int linenr, const char *func,
                             const char *fmt, ...) GCC_FMT_ATTR(4, 5);
+void qerror_report_err(Error *err);
 QString *qerror_format(const char *fmt, QDict *error);
 #define qerror_report(fmt, ...) \
     qerror_report_internal(__FILE__, __LINE__, __func__, fmt, ## __VA_ARGS__)
@@ -51,6 +53,9 @@ QError *qobject_to_qerror(const QObject *obj);
  */
 #define QERR_BAD_BUS_FOR_DEVICE \
     "{ 'class': 'BadBusForDevice', 'data': { 'device': %s, 'bad_bus_type': %s } }"
+
+#define QERR_BLOCK_FORMAT_FEATURE_NOT_SUPPORTED \
+    "{ 'class': 'BlockFormatFeatureNotSupported', 'data': { 'format': %s, 'name': %s, 'feature': %s } }"
 
 #define QERR_BUS_NOT_FOUND \
     "{ 'class': 'BusNotFound', 'data': { 'bus': %s } }"
@@ -69,6 +74,9 @@ QError *qobject_to_qerror(const QObject *obj);
 
 #define QERR_DEVICE_IN_USE \
     "{ 'class': 'DeviceInUse', 'data': { 'device': %s } }"
+
+#define QERR_DEVICE_FEATURE_BLOCKS_MIGRATION \
+    "{ 'class': 'DeviceFeatureBlocksMigration', 'data': { 'device': %s, 'feature': %s } }"
 
 #define QERR_DEVICE_LOCKED \
     "{ 'class': 'DeviceLocked', 'data': { 'device': %s } }"
@@ -163,6 +171,9 @@ QError *qobject_to_qerror(const QObject *obj);
 #define QERR_QMP_EXTRA_MEMBER \
     "{ 'class': 'QMPExtraInputObjectMember', 'data': { 'member': %s } }"
 
+#define QERR_RESET_REQUIRED \
+    "{ 'class': 'ResetRequired', 'data': {} }"
+
 #define QERR_SET_PASSWD_FAILED \
     "{ 'class': 'SetPasswdFailed', 'data': {} }"
 
@@ -180,6 +191,9 @@ QError *qobject_to_qerror(const QObject *obj);
 
 #define QERR_UNKNOWN_BLOCK_FORMAT_FEATURE \
     "{ 'class': 'UnknownBlockFormatFeature', 'data': { 'device': %s, 'format': %s, 'feature': %s } }"
+
+#define QERR_VIRTFS_FEATURE_BLOCKS_MIGRATION \
+    "{ 'class': 'VirtFSFeatureBlocksMigration', 'data': { 'path': %s, 'tag': %s } }"
 
 #define QERR_VNC_SERVER_FAILED \
     "{ 'class': 'VNCServerFailed', 'data': { 'target': %s } }"

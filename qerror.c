@@ -49,6 +49,10 @@ static const QErrorStringTable qerror_table[] = {
         .desc      = "Device '%(device)' can't go on a %(bad_bus_type) bus",
     },
     {
+        .error_fmt = QERR_BLOCK_FORMAT_FEATURE_NOT_SUPPORTED,
+        .desc      = "Block format '%(format)' used by device '%(name)' does not support feature '%(feature)'",
+    },
+    {
         .error_fmt = QERR_BUS_NOT_FOUND,
         .desc      = "Bus '%(bus)' not found",
     },
@@ -71,6 +75,10 @@ static const QErrorStringTable qerror_table[] = {
     {
         .error_fmt = QERR_DEVICE_IN_USE,
         .desc      = "Device '%(device)' is in use",
+    },
+    {
+        .error_fmt = QERR_DEVICE_FEATURE_BLOCKS_MIGRATION,
+        .desc      = "Migration is disabled when using feature '%(feature)' in device '%(device)'",
     },
     {
         .error_fmt = QERR_DEVICE_LOCKED,
@@ -115,6 +123,10 @@ static const QErrorStringTable qerror_table[] = {
     {
         .error_fmt = QERR_FD_NOT_SUPPLIED,
         .desc      = "No file descriptor supplied via SCM_RIGHTS",
+    },
+    {
+        .error_fmt = QERR_FEATURE_DISABLED,
+        .desc      = "The feature '%(name)' is not enabled",
     },
     {
         .error_fmt = QERR_INVALID_BLOCK_FORMAT,
@@ -194,6 +206,10 @@ static const QErrorStringTable qerror_table[] = {
         .desc      = "QMP input object member '%(member)' is unexpected",
     },
     {
+        .error_fmt = QERR_RESET_REQUIRED,
+        .desc      = "Resetting the Virtual Machine is required",
+    },
+    {
         .error_fmt = QERR_SET_PASSWD_FAILED,
         .desc      = "Could not set password",
     },
@@ -219,6 +235,11 @@ static const QErrorStringTable qerror_table[] = {
                      "supported by this qemu version: %(feature)",
     },
     {
+        .error_fmt = QERR_VIRTFS_FEATURE_BLOCKS_MIGRATION,
+        .desc      = "Migration is disabled when VirtFS export path '%(path)' "
+                     "is mounted in the guest using mount_tag '%(tag)'",
+    },
+    {
         .error_fmt = QERR_VNC_SERVER_FAILED,
         .desc      = "Could not start VNC server on %(target)",
     },
@@ -242,7 +263,7 @@ QError *qerror_new(void)
 {
     QError *qerr;
 
-    qerr = qemu_mallocz(sizeof(*qerr));
+    qerr = g_malloc0(sizeof(*qerr));
     QOBJECT_INIT(qerr, &qerror_type);
 
     return qerr;
@@ -478,6 +499,39 @@ void qerror_report_internal(const char *file, int linenr, const char *func,
     }
 }
 
+/* Evil... */
+struct Error
+{
+    QDict *obj;
+    const char *fmt;
+    char *msg;
+};
+
+void qerror_report_err(Error *err)
+{
+    QError *qerr;
+    int i;
+
+    qerr = qerror_new();
+    loc_save(&qerr->loc);
+    QINCREF(err->obj);
+    qerr->error = err->obj;
+
+    for (i = 0; qerror_table[i].error_fmt; i++) {
+        if (strcmp(qerror_table[i].error_fmt, err->fmt) == 0) {
+            qerr->entry = &qerror_table[i];
+            break;
+        }
+    }
+
+    if (monitor_cur_is_qmp()) {
+        monitor_set_error(cur_mon, qerr);
+    } else {
+        qerror_print(qerr);
+        QDECREF(qerr);
+    }
+}
+
 /**
  * qobject_to_qerror(): Convert a QObject into a QError
  */
@@ -501,5 +555,5 @@ static void qerror_destroy_obj(QObject *obj)
     qerr = qobject_to_qerror(obj);
 
     QDECREF(qerr->error);
-    qemu_free(qerr);
+    g_free(qerr);
 }

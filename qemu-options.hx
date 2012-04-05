@@ -133,7 +133,7 @@ ETEXI
 DEF("drive", HAS_ARG, QEMU_OPTION_drive,
     "-drive [file=file][,if=type][,bus=n][,unit=m][,media=d][,index=i]\n"
     "       [,cyls=c,heads=h,secs=s[,trans=t]][,snapshot=on|off]\n"
-    "       [,cache=writethrough|writeback|none|unsafe][,format=f]\n"
+    "       [,cache=writethrough|writeback|none|directsync|unsafe][,format=f]\n"
     "       [,serial=s][,addr=A][,id=name][,aio=threads|native]\n"
     "       [,readonly=on|off]\n"
     "                use 'file' as a drive image\n", QEMU_ARCH_ALL)
@@ -148,6 +148,9 @@ Define a new drive. Valid options are:
 This option defines which disk image (@pxref{disk_images}) to use with
 this drive. If the filename contains comma, you must double it
 (for instance, "file=my,,file" to use file "my,file").
+
+Special files such as iSCSI devices can be specified using protocol
+specific URLs. See the section for "Device URL Syntax" for more information.
 @item if=@var{interface}
 This option defines on which type on interface the drive is connected.
 Available types are: ide, scsi, sd, mtd, floppy, pflash, virtio.
@@ -164,7 +167,7 @@ These options have the same definition as they have in @option{-hdachs}.
 @item snapshot=@var{snapshot}
 @var{snapshot} is "on" or "off" and allows to enable snapshot for given drive (see @option{-snapshot}).
 @item cache=@var{cache}
-@var{cache} is "none", "writeback", "unsafe", or "writethrough" and controls how the host cache is used to access block data.
+@var{cache} is "none", "writeback", "unsafe", "directsync" or "writethrough" and controls how the host cache is used to access block data.
 @item aio=@var{aio}
 @var{aio} is "threads", or "native" and selects between pthread based disk I/O and native Linux AIO.
 @item format=@var{format}
@@ -198,6 +201,10 @@ corruption.
 The host page cache can be avoided entirely with @option{cache=none}.  This will
 attempt to do disk IO directly to the guests memory.  QEMU may still perform
 an internal copy of the data.
+
+The host page cache can be avoided while only sending write notifications to
+the guest when the data has been reported as written by the storage subsystem
+using @option{cache=directsync}.
 
 Some block drivers perform badly with @option{cache=writethrough}, most notably,
 qcow2.  If performance is more important than correctness,
@@ -303,10 +310,13 @@ ETEXI
 
 DEF("boot", HAS_ARG, QEMU_OPTION_boot,
     "-boot [order=drives][,once=drives][,menu=on|off]\n"
-    "                'drives': floppy (a), hard disk (c), CD-ROM (d), network (n)\n",
+    "      [,splash=sp_name][,splash-time=sp_time]\n"
+    "                'drives': floppy (a), hard disk (c), CD-ROM (d), network (n)\n"
+    "                'sp_name': the file's name that would be passed to bios as logo picture, if menu=on\n"
+    "                'sp_time': the period that splash picture last if menu=on, unit is ms\n",
     QEMU_ARCH_ALL)
 STEXI
-@item -boot [order=@var{drives}][,once=@var{drives}][,menu=on|off]
+@item -boot [order=@var{drives}][,once=@var{drives}][,menu=on|off][,splash=@var{sp_name}][,splash-time=@var{sp_time}]
 @findex -boot
 Specify boot order @var{drives} as a string of drive letters. Valid
 drive letters depend on the target achitecture. The x86 PC uses: a, b
@@ -318,11 +328,20 @@ particular boot order only on the first startup, specify it via
 Interactive boot menus/prompts can be enabled via @option{menu=on} as far
 as firmware/BIOS supports them. The default is non-interactive boot.
 
+A splash picture could be passed to bios, enabling user to show it as logo,
+when option splash=@var{sp_name} is given and menu=on, If firmware/BIOS
+supports them. Currently Seabios for X86 system support it.
+limitation: The splash file could be a jpeg file or a BMP file in 24 BPP
+format(true color). The resolution should be supported by the SVGA mode, so
+the recommended is 320x240, 640x480, 800x640.
+
 @example
 # try to boot from network first, then from hard disk
 qemu -boot order=nc
 # boot from CD-ROM first, switch back to default order after reboot
 qemu -boot once=d
+# boot with a splash picture for 5 seconds.
+qemu -boot menu=on,splash=/root/boot.bmp,splash-time=5000
 @end example
 
 Note: The legacy format '-boot @var{drives}' is still supported but its
@@ -506,74 +525,119 @@ possible drivers and properties, use @code{-device ?} and
 @code{-device @var{driver},?}.
 ETEXI
 
+DEFHEADING()
+
 DEFHEADING(File system options:)
 
 DEF("fsdev", HAS_ARG, QEMU_OPTION_fsdev,
-    "-fsdev local,id=id,path=path,security_model=[mapped|passthrough|none]\n",
+    "-fsdev fsdriver,id=id,path=path,[security_model={mapped|passthrough|none}]\n"
+    "       [,writeout=immediate][,readonly]\n",
     QEMU_ARCH_ALL)
 
 STEXI
 
-The general form of a File system device option is:
-@table @option
-
-@item -fsdev @var{fstype} ,id=@var{id} [,@var{options}]
+@item -fsdev @var{fsdriver},id=@var{id},path=@var{path},[security_model=@var{security_model}][,writeout=@var{writeout}][,readonly]
 @findex -fsdev
-Fstype is one of:
-@option{local},
-The specific Fstype will determine the applicable options.
-
-Options to each backend are described below.
-
-@item -fsdev local ,id=@var{id} ,path=@var{path} ,security_model=@var{security_model}
-
-Create a file-system-"device" for local-filesystem.
-
-@option{local} is only available on Linux.
-
-@option{path} specifies the path to be exported. @option{path} is required.
-
-@option{security_model} specifies the security model to be followed.
-@option{security_model} is required.
-
+Define a new file system device. Valid options are:
+@table @option
+@item @var{fsdriver}
+This option specifies the fs driver backend to use.
+Currently "local" and "handle" file system drivers are supported.
+@item id=@var{id}
+Specifies identifier for this device
+@item path=@var{path}
+Specifies the export path for the file system device. Files under
+this path will be available to the 9p client on the guest.
+@item security_model=@var{security_model}
+Specifies the security model to be used for this export path.
+Supported security models are "passthrough", "mapped" and "none".
+In "passthrough" security model, files are stored using the same
+credentials as they are created on the guest. This requires qemu
+to run as root. In "mapped" security model, some of the file
+attributes like uid, gid, mode bits and link target are stored as
+file attributes. Directories exported by this security model cannot
+interact with other unix tools. "none" security model is same as
+passthrough except the sever won't report failures if it fails to
+set file attributes like ownership. Security model is mandatory
+only for local fsdriver. Other fsdrivers (like handle) don't take
+security model as a parameter.
+@item writeout=@var{writeout}
+This is an optional argument. The only supported value is "immediate".
+This means that host page cache will be used to read and write data but
+write notification will be sent to the guest only when the data has been
+reported as written by the storage subsystem.
+@item readonly
+Enables exporting 9p share as a readonly mount for guests. By default
+read-write access is given.
 @end table
+
+-fsdev option is used along with -device driver "virtio-9p-pci".
+@item -device virtio-9p-pci,fsdev=@var{id},mount_tag=@var{mount_tag}
+Options for virtio-9p-pci driver are:
+@table @option
+@item fsdev=@var{id}
+Specifies the id value specified along with -fsdev option
+@item mount_tag=@var{mount_tag}
+Specifies the tag name to be used by the guest to mount this export point
+@end table
+
 ETEXI
+
+DEFHEADING()
 
 DEFHEADING(Virtual File system pass-through options:)
 
 DEF("virtfs", HAS_ARG, QEMU_OPTION_virtfs,
-    "-virtfs local,path=path,mount_tag=tag,security_model=[mapped|passthrough|none]\n",
+    "-virtfs local,path=path,mount_tag=tag,security_model=[mapped|passthrough|none]\n"
+    "        [,writeout=immediate][,readonly]\n",
     QEMU_ARCH_ALL)
 
 STEXI
 
-The general form of a Virtual File system pass-through option is:
-@table @option
-
-@item -virtfs @var{fstype} [,@var{options}]
+@item -virtfs @var{fsdriver},path=@var{path},mount_tag=@var{mount_tag},security_model=@var{security_model}[,writeout=@var{writeout}][,readonly]
 @findex -virtfs
-Fstype is one of:
-@option{local},
-The specific Fstype will determine the applicable options.
 
-Options to each backend are described below.
-
-@item -virtfs local ,path=@var{path} ,mount_tag=@var{mount_tag} ,security_model=@var{security_model}
-
-Create a Virtual file-system-pass through for local-filesystem.
-
-@option{local} is only available on Linux.
-
-@option{path} specifies the path to be exported. @option{path} is required.
-
-@option{security_model} specifies the security model to be followed.
-@option{security_model} is required.
-
-
-@option{mount_tag} specifies the tag with which the exported file is mounted.
-@option{mount_tag} is required.
-
+The general form of a Virtual File system pass-through options are:
+@table @option
+@item @var{fsdriver}
+This option specifies the fs driver backend to use.
+Currently "local" and "handle" file system drivers are supported.
+@item id=@var{id}
+Specifies identifier for this device
+@item path=@var{path}
+Specifies the export path for the file system device. Files under
+this path will be available to the 9p client on the guest.
+@item security_model=@var{security_model}
+Specifies the security model to be used for this export path.
+Supported security models are "passthrough", "mapped" and "none".
+In "passthrough" security model, files are stored using the same
+credentials as they are created on the guest. This requires qemu
+to run as root. In "mapped" security model, some of the file
+attributes like uid, gid, mode bits and link target are stored as
+file attributes. Directories exported by this security model cannot
+interact with other unix tools. "none" security model is same as
+passthrough except the sever won't report failures if it fails to
+set file attributes like ownership. Security model is mandatory only
+for local fsdriver. Other fsdrivers (like handle) don't take security
+model as a parameter.
+@item writeout=@var{writeout}
+This is an optional argument. The only supported value is "immediate".
+This means that host page cache will be used to read and write data but
+write notification will be sent to the guest only when the data has been
+reported as written by the storage subsystem.
+@item readonly
+Enables exporting 9p share as a readonly mount for guests. By default
+read-write access is given.
 @end table
+ETEXI
+
+DEF("virtfs_synth", 0, QEMU_OPTION_virtfs_synth,
+    "-virtfs_synth Create synthetic file system image\n",
+    QEMU_ARCH_ALL)
+STEXI
+@item -virtfs_synth
+@findex -virtfs_synth
+Create synthetic file system image
 ETEXI
 
 DEFHEADING()
@@ -1062,12 +1126,17 @@ Enable virtio balloon device (default), optionally with PCI address
 ETEXI
 
 DEF("acpitable", HAS_ARG, QEMU_OPTION_acpitable,
-    "-acpitable [sig=str][,rev=n][,oem_id=str][,oem_table_id=str][,oem_rev=n][,asl_compiler_id=str][,asl_compiler_rev=n][,data=file1[:file2]...]\n"
+    "-acpitable [sig=str][,rev=n][,oem_id=str][,oem_table_id=str][,oem_rev=n][,asl_compiler_id=str][,asl_compiler_rev=n][,{data|file}=file1[:file2]...]\n"
     "                ACPI table description\n", QEMU_ARCH_I386)
 STEXI
 @item -acpitable [sig=@var{str}][,rev=@var{n}][,oem_id=@var{str}][,oem_table_id=@var{str}][,oem_rev=@var{n}] [,asl_compiler_id=@var{str}][,asl_compiler_rev=@var{n}][,data=@var{file1}[:@var{file2}]...]
 @findex -acpitable
 Add ACPI table with specified header fields and context from specified files.
+For file=, take whole ACPI table from the specified files, including all
+ACPI headers (possible overridden by other options).
+For data=, only data
+portion of the table is used, all header information is specified in the
+command line.
 ETEXI
 
 DEF("smbios", HAS_ARG, QEMU_OPTION_smbios,
@@ -1256,9 +1325,9 @@ or @file{C:\WINNT\SYSTEM32\DRIVERS\ETC\LMHOSTS} (Windows NT/2000).
 
 Then @file{@var{dir}} can be accessed in @file{\\smbserver\qemu}.
 
-Note that a SAMBA server must be installed on the host OS in
-@file{/usr/sbin/smbd}. QEMU was tested successfully with smbd versions from
-Red Hat 9, Fedora Core 3 and OpenSUSE 11.x.
+Note that a SAMBA server must be installed on the host OS.
+QEMU was tested successfully with smbd versions from Red Hat 9,
+Fedora Core 3 and OpenSUSE 11.x.
 
 @item hostfwd=[tcp|udp]:[@var{hostaddr}]:@var{hostport}-[@var{guestaddr}]:@var{guestport}
 Redirect incoming TCP or UDP connections to the host port @var{hostport} to
@@ -1391,7 +1460,7 @@ qemu linux.img -net nic,macaddr=52:54:00:12:34:56 \
 Connect VLAN @var{n} to PORT @var{n} of a vde switch running on host and
 listening for incoming connections on @var{socketpath}. Use GROUP @var{groupname}
 and MODE @var{octalmode} to change default ownership and permissions for
-communication port. This option is available only if QEMU has been compiled
+communication port. This option is only available if QEMU has been compiled
 with vde support enabled.
 
 Example:
@@ -1652,20 +1721,107 @@ Connect to a local parallel port.
 @option{path} specifies the path to the parallel port device. @option{path} is
 required.
 
-#if defined(CONFIG_SPICE)
 @item -chardev spicevmc ,id=@var{id} ,debug=@var{debug}, name=@var{name}
+
+@option{spicevmc} is only available when spice support is built in.
 
 @option{debug} debug level for spicevmc
 
 @option{name} name of spice channel to connect to
 
 Connect to a spice virtual machine channel, such as vdiport.
-#endif
 
 @end table
 ETEXI
 
 DEFHEADING()
+
+STEXI
+DEFHEADING(Device URL Syntax:)
+
+In addition to using normal file images for the emulated storage devices,
+QEMU can also use networked resources such as iSCSI devices. These are
+specified using a special URL syntax.
+
+@table @option
+@item iSCSI
+iSCSI support allows QEMU to access iSCSI resources directly and use as
+images for the guest storage. Both disk and cdrom images are supported.
+
+Syntax for specifying iSCSI LUNs is
+``iscsi://<target-ip>[:<port>]/<target-iqn>/<lun>''
+
+Example (without authentication):
+@example
+qemu -cdrom iscsi://192.0.2.1/iqn.2001-04.com.example/2 \
+--drive file=iscsi://192.0.2.1/iqn.2001-04.com.example/1
+@end example
+
+Example (CHAP username/password via URL):
+@example
+qemu --drive file=iscsi://user%password@@192.0.2.1/iqn.2001-04.com.example/1
+@end example
+
+Example (CHAP username/password via environment variables):
+@example
+LIBISCSI_CHAP_USERNAME="user" \
+LIBISCSI_CHAP_PASSWORD="password" \
+qemu --drive file=iscsi://192.0.2.1/iqn.2001-04.com.example/1
+@end example
+
+iSCSI support is an optional feature of QEMU and only available when
+compiled and linked against libiscsi.
+
+@item NBD
+QEMU supports NBD (Network Block Devices) both using TCP protocol as well
+as Unix Domain Sockets.
+
+Syntax for specifying a NBD device using TCP
+``nbd:<server-ip>:<port>[:exportname=<export>]''
+
+Syntax for specifying a NBD device using Unix Domain Sockets
+``nbd:unix:<domain-socket>[:exportname=<export>]''
+
+
+Example for TCP
+@example
+qemu --drive file=nbd:192.0.2.1:30000
+@end example
+
+Example for Unix Domain Sockets
+@example
+qemu --drive file=nbd:unix:/tmp/nbd-socket
+@end example
+
+@item Sheepdog
+Sheepdog is a distributed storage system for QEMU.
+QEMU supports using either local sheepdog devices or remote networked
+devices.
+
+Syntax for specifying a sheepdog device
+@table @list
+``sheepdog:<vdiname>''
+
+``sheepdog:<vdiname>:<snapid>''
+
+``sheepdog:<vdiname>:<tag>''
+
+``sheepdog:<host>:<port>:<vdiname>''
+
+``sheepdog:<host>:<port>:<vdiname>:<snapid>''
+
+``sheepdog:<host>:<port>:<vdiname>:<tag>''
+@end table
+
+Example
+@example
+qemu --drive file=sheepdog:192.0.2.1:30000:MyVirtualMachine
+@end example
+
+See also @url{http://http://www.osrg.net/sheepdog/}.
+
+@end table
+ETEXI
 
 DEFHEADING(Bluetooth(R) options:)
 
@@ -2444,11 +2600,11 @@ STEXI
 Set OpenBIOS nvram @var{variable} to given @var{value} (PPC, SPARC only).
 ETEXI
 DEF("semihosting", 0, QEMU_OPTION_semihosting,
-    "-semihosting    semihosting mode\n", QEMU_ARCH_ARM | QEMU_ARCH_M68K)
+    "-semihosting    semihosting mode\n", QEMU_ARCH_ARM | QEMU_ARCH_M68K | QEMU_ARCH_XTENSA)
 STEXI
 @item -semihosting
 @findex -semihosting
-Semihosting mode (ARM, M68K only).
+Semihosting mode (ARM, M68K, Xtensa only).
 ETEXI
 DEF("old-param", 0, QEMU_OPTION_old_param,
     "-old-param      old param mode\n", QEMU_ARCH_ARM)
@@ -2484,17 +2640,32 @@ Normally QEMU loads a configuration file from @var{sysconfdir}/qemu.conf and
 @var{sysconfdir}/target-@var{ARCH}.conf on startup.  The @code{-nodefconfig}
 option will prevent QEMU from loading these configuration files at startup.
 ETEXI
-#ifdef CONFIG_SIMPLE_TRACE
 DEF("trace", HAS_ARG, QEMU_OPTION_trace,
-    "-trace\n"
-    "                Specify a trace file to log traces to\n",
+    "-trace [events=<file>][,file=<file>]\n"
+    "                specify tracing options\n",
     QEMU_ARCH_ALL)
 STEXI
-@item -trace
+HXCOMM This line is not accurate, as some sub-options are backend-specific but
+HXCOMM HX does not support conditional compilation of text.
+@item -trace [events=@var{file}][,file=@var{file}]
 @findex -trace
-Specify a trace file to log output traces to.
+
+Specify tracing options.
+
+@table @option
+@item events=@var{file}
+Immediately enable events listed in @var{file}.
+The file must contain one event name (as listed in the @var{trace-events} file)
+per line.
+This option is only available if QEMU has been compiled with
+either @var{simple} or @var{stderr} tracing backend.
+@item file=@var{file}
+Log output traces to @var{file}.
+
+This option is only available if QEMU has been compiled with
+the @var{simple} tracing backend.
+@end table
 ETEXI
-#endif
 
 HXCOMM This is the last statement. Insert new options before this line!
 STEXI

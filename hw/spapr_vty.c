@@ -50,19 +50,27 @@ void vty_putchars(VIOsPAPRDevice *sdev, uint8_t *buf, int len)
 {
     VIOsPAPRVTYDevice *dev = (VIOsPAPRVTYDevice *)sdev;
 
-    /* FIXME: should check the qemu_chr_write() return value */
-    qemu_chr_write(dev->chardev, buf, len);
+    /* FIXME: should check the qemu_chr_fe_write() return value */
+    qemu_chr_fe_write(dev->chardev, buf, len);
 }
 
 static int spapr_vty_init(VIOsPAPRDevice *sdev)
 {
     VIOsPAPRVTYDevice *dev = (VIOsPAPRVTYDevice *)sdev;
 
+    if (!dev->chardev) {
+        fprintf(stderr, "spapr-vty: Can't create vty without a chardev!\n");
+        exit(1);
+    }
+
     qemu_chr_add_handlers(dev->chardev, vty_can_receive,
                           vty_receive, NULL, dev);
 
     return 0;
 }
+
+/* Forward declaration */
+static VIOsPAPRDevice *vty_lookup(sPAPREnvironment *spapr, target_ulong reg);
 
 static target_ulong h_put_term_char(CPUState *env, sPAPREnvironment *spapr,
                                     target_ulong opcode, target_ulong *args)
@@ -71,9 +79,10 @@ static target_ulong h_put_term_char(CPUState *env, sPAPREnvironment *spapr,
     target_ulong len = args[1];
     target_ulong char0_7 = args[2];
     target_ulong char8_15 = args[3];
-    VIOsPAPRDevice *sdev = spapr_vio_find_by_reg(spapr->vio_bus, reg);
+    VIOsPAPRDevice *sdev;
     uint8_t buf[16];
 
+    sdev = vty_lookup(spapr, reg);
     if (!sdev) {
         return H_PARAMETER;
     }
@@ -97,9 +106,10 @@ static target_ulong h_get_term_char(CPUState *env, sPAPREnvironment *spapr,
     target_ulong *len = args + 0;
     target_ulong *char0_7 = args + 1;
     target_ulong *char8_15 = args + 2;
-    VIOsPAPRDevice *sdev = spapr_vio_find_by_reg(spapr->vio_bus, reg);
+    VIOsPAPRDevice *sdev;
     uint8_t buf[16];
 
+    sdev = vty_lookup(spapr, reg);
     if (!sdev) {
         return H_PARAMETER;
     }
@@ -115,20 +125,14 @@ static target_ulong h_get_term_char(CPUState *env, sPAPREnvironment *spapr,
     return H_SUCCESS;
 }
 
-void spapr_vty_create(VIOsPAPRBus *bus,
-                      uint32_t reg, CharDriverState *chardev,
-                      qemu_irq qirq, uint32_t vio_irq_num)
+void spapr_vty_create(VIOsPAPRBus *bus, uint32_t reg, CharDriverState *chardev)
 {
     DeviceState *dev;
-    VIOsPAPRDevice *sdev;
 
     dev = qdev_create(&bus->bus, "spapr-vty");
     qdev_prop_set_uint32(dev, "reg", reg);
     qdev_prop_set_chr(dev, "chardev", chardev);
     qdev_init_nofail(dev);
-    sdev = (VIOsPAPRDevice *)dev;
-    sdev->qirq = qirq;
-    sdev->vio_irq_num = vio_irq_num;
 }
 
 static void vty_hcalls(VIOsPAPRBus *bus)
@@ -146,11 +150,63 @@ static VIOsPAPRDeviceInfo spapr_vty = {
     .qdev.name = "spapr-vty",
     .qdev.size = sizeof(VIOsPAPRVTYDevice),
     .qdev.props = (Property[]) {
-        DEFINE_PROP_UINT32("reg", VIOsPAPRDevice, reg, 0),
+        DEFINE_SPAPR_PROPERTIES(VIOsPAPRVTYDevice, sdev, SPAPR_VTY_BASE_ADDRESS, 0),
         DEFINE_PROP_CHR("chardev", VIOsPAPRVTYDevice, chardev),
         DEFINE_PROP_END_OF_LIST(),
     },
 };
+
+VIOsPAPRDevice *spapr_vty_get_default(VIOsPAPRBus *bus)
+{
+    VIOsPAPRDevice *sdev, *selected;
+    DeviceState *iter;
+
+    /*
+     * To avoid the console bouncing around we want one VTY to be
+     * the "default". We haven't really got anything to go on, so
+     * arbitrarily choose the one with the lowest reg value.
+     */
+
+    selected = NULL;
+    QTAILQ_FOREACH(iter, &bus->bus.children, sibling) {
+        /* Only look at VTY devices */
+        if (iter->info != &spapr_vty.qdev) {
+            continue;
+        }
+
+        sdev = DO_UPCAST(VIOsPAPRDevice, qdev, iter);
+
+        /* First VTY we've found, so it is selected for now */
+        if (!selected) {
+            selected = sdev;
+            continue;
+        }
+
+        /* Choose VTY with lowest reg value */
+        if (sdev->reg < selected->reg) {
+            selected = sdev;
+        }
+    }
+
+    return selected;
+}
+
+static VIOsPAPRDevice *vty_lookup(sPAPREnvironment *spapr, target_ulong reg)
+{
+    VIOsPAPRDevice *sdev;
+
+    sdev = spapr_vio_find_by_reg(spapr->vio_bus, reg);
+    if (!sdev && reg == 0) {
+        /* Hack for kernel early debug, which always specifies reg==0.
+         * We search all VIO devices, and grab the vty with the lowest
+         * reg.  This attempts to mimic existing PowerVM behaviour
+         * (early debug does work there, despite having no vty with
+         * reg==0. */
+        return spapr_vty_get_default(spapr->vio_bus);
+    }
+
+    return sdev;
+}
 
 static void spapr_vty_register(void)
 {

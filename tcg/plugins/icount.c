@@ -57,5 +57,5 @@ void tpi_init(TCGPluginInterface *tpi)
     tpi->pre_tb_helper_code = pre_tb_helper_code;
     tpi->cpus_stopped = cpus_stopped;
 
-    icount_total = qemu_mallocz(tpi->nb_cpus * sizeof(uint64_t));
+    icount_total = g_malloc0(tpi->nb_cpus * sizeof(uint64_t));
 }

@@ -57,8 +57,14 @@ typedef struct VIOsPAPRDevice {
     target_ulong signal_state;
     uint32_t rtce_window_size;
     VIOsPAPR_RTCE *rtce_table;
+    int kvmtce_fd;
     VIOsPAPR_CRQ crq;
 } VIOsPAPRDevice;
+
+#define DEFINE_SPAPR_PROPERTIES(type, field, default_reg, default_dma_window) \
+        DEFINE_PROP_UINT32("reg", type, field.reg, default_reg), \
+        DEFINE_PROP_UINT32("dma-window", type, field.rtce_window_size, \
+                           default_dma_window)
 
 typedef struct VIOsPAPRBus {
     BusState bus;
@@ -77,6 +83,7 @@ extern VIOsPAPRBus *spapr_vio_bus_init(void);
 extern VIOsPAPRDevice *spapr_vio_find_by_reg(VIOsPAPRBus *bus, uint32_t reg);
 extern void spapr_vio_bus_register_withprop(VIOsPAPRDeviceInfo *info);
 extern int spapr_populate_vdevice(VIOsPAPRBus *bus, void *fdt);
+extern int spapr_populate_chosen_stdout(void *fdt, VIOsPAPRBus *bus);
 
 extern int spapr_vio_signal(VIOsPAPRDevice *dev, target_ulong mode);
 
@@ -98,15 +105,11 @@ uint64_t ldq_tce(VIOsPAPRDevice *dev, uint64_t taddr);
 int spapr_vio_send_crq(VIOsPAPRDevice *dev, uint8_t *crq);
 
 void vty_putchars(VIOsPAPRDevice *sdev, uint8_t *buf, int len);
-void spapr_vty_create(VIOsPAPRBus *bus,
-                      uint32_t reg, CharDriverState *chardev,
-                      qemu_irq qirq, uint32_t vio_irq_num);
+void spapr_vty_create(VIOsPAPRBus *bus, uint32_t reg, CharDriverState *chardev);
+void spapr_vlan_create(VIOsPAPRBus *bus, uint32_t reg, NICInfo *nd);
+void spapr_vscsi_create(VIOsPAPRBus *bus, uint32_t reg);
 
-void spapr_vlan_create(VIOsPAPRBus *bus, uint32_t reg, NICInfo *nd,
-                       qemu_irq qirq, uint32_t vio_irq_num);
-
-void spapr_vscsi_create(VIOsPAPRBus *bus, uint32_t reg,
-                        qemu_irq qirq, uint32_t vio_irq_num);
+VIOsPAPRDevice *spapr_vty_get_default(VIOsPAPRBus *bus);
 
 int spapr_tce_set_bypass(uint32_t unit, uint32_t enable);
 void spapr_vio_quiesce(void);

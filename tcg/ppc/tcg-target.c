@@ -436,13 +436,13 @@ static const uint32_t tcg_to_bc[10] = {
     [TCG_COND_GTU] = BC | BI (7, CR_GT) | BO_COND_TRUE,
 };
 
-static void tcg_out_mov(TCGContext *s, TCGType type, int ret, int arg)
+static void tcg_out_mov(TCGContext *s, TCGType type, TCGReg ret, TCGReg arg)
 {
     tcg_out32 (s, OR | SAB (arg, ret, arg));
 }
 
 static void tcg_out_movi(TCGContext *s, TCGType type,
-                         int ret, tcg_target_long arg)
+                         TCGReg ret, tcg_target_long arg)
 {
     if (arg == (int16_t) arg)
         tcg_out32 (s, ADDI | RT (ret) | RA (0) | (arg & 0xffff));
@@ -525,13 +525,13 @@ static void *qemu_st_helpers[4] = {
 
 static void tcg_out_qemu_ld (TCGContext *s, const TCGArg *args, int opc)
 {
-    int addr_reg, data_reg, data_reg2, r0, r1, rbase, mem_index, s_bits, bswap;
+    int addr_reg, data_reg, data_reg2, r0, r1, rbase, bswap;
 #ifdef CONFIG_SOFTMMU
-    int r2;
+    int mem_index, s_bits, r2;
     void *label1_ptr, *label2_ptr;
-#endif
 #if TARGET_LONG_BITS == 64
     int addr_reg2;
+#endif
 #endif
 
     data_reg = *args++;
@@ -540,13 +540,13 @@ static void tcg_out_qemu_ld (TCGContext *s, const TCGArg *args, int opc)
     else
         data_reg2 = 0;
     addr_reg = *args++;
+
+#ifdef CONFIG_SOFTMMU
 #if TARGET_LONG_BITS == 64
     addr_reg2 = *args++;
 #endif
     mem_index = *args;
     s_bits = opc & 3;
-
-#ifdef CONFIG_SOFTMMU
     r0 = 3;
     r1 = 4;
     r2 = 0;
@@ -722,13 +722,13 @@ static void tcg_out_qemu_ld (TCGContext *s, const TCGArg *args, int opc)
 
 static void tcg_out_qemu_st (TCGContext *s, const TCGArg *args, int opc)
 {
-    int addr_reg, r0, r1, data_reg, data_reg2, mem_index, bswap, rbase;
+    int addr_reg, r0, r1, data_reg, data_reg2, bswap, rbase;
 #ifdef CONFIG_SOFTMMU
-    int r2, ir;
+    int mem_index, r2, ir;
     void *label1_ptr, *label2_ptr;
-#endif
 #if TARGET_LONG_BITS == 64
     int addr_reg2;
+#endif
 #endif
 
     data_reg = *args++;
@@ -737,12 +737,12 @@ static void tcg_out_qemu_st (TCGContext *s, const TCGArg *args, int opc)
     else
         data_reg2 = 0;
     addr_reg = *args++;
+
+#ifdef CONFIG_SOFTMMU
 #if TARGET_LONG_BITS == 64
     addr_reg2 = *args++;
 #endif
     mem_index = *args;
-
-#ifdef CONFIG_SOFTMMU
     r0 = 3;
     r1 = 4;
     r2 = 0;
@@ -961,13 +961,13 @@ static void tcg_target_qemu_prologue (TCGContext *s)
     tcg_out32 (s, BCLR | BO_ALWAYS);
 }
 
-static void tcg_out_ld (TCGContext *s, TCGType type, int ret, int arg1,
+static void tcg_out_ld (TCGContext *s, TCGType type, TCGReg ret, TCGReg arg1,
                         tcg_target_long arg2)
 {
     tcg_out_ldst (s, ret, arg1, arg2, LWZ, LWZX);
 }
 
-static void tcg_out_st (TCGContext *s, TCGType type, int arg, int arg1,
+static void tcg_out_st (TCGContext *s, TCGType type, TCGReg arg, TCGReg arg1,
                         tcg_target_long arg2)
 {
     tcg_out_ldst (s, arg, arg1, arg2, STW, STWX);
@@ -1790,6 +1790,16 @@ static void tcg_out_op(TCGContext *s, TCGOpcode opc, const TCGArg *args,
         }
         break;
 
+    case INDEX_op_deposit_i32:
+        tcg_out32 (s, RLWIMI
+                   | RA (args[0])
+                   | RS (args[2])
+                   | SH (args[3])
+                   | MB (32 - args[3] - args[4])
+                   | ME (31 - args[3])
+            );
+        break;
+
     default:
         tcg_dump_ops (s, stderr);
         tcg_abort ();
@@ -1884,6 +1894,8 @@ static const TCGTargetOpDef ppc_op_defs[] = {
     { INDEX_op_ext8u_i32, { "r", "r" } },
     { INDEX_op_ext16s_i32, { "r", "r" } },
     { INDEX_op_ext16u_i32, { "r", "r" } },
+
+    { INDEX_op_deposit_i32, { "r", "0", "r" } },
 
     { -1 },
 };

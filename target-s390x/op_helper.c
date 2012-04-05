@@ -18,7 +18,8 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "exec.h"
+#include "cpu.h"
+#include "dyngen-exec.h"
 #include "host-utils.h"
 #include "helpers.h"
 #include <string.h>
@@ -28,9 +29,14 @@
 #include <linux/kvm.h>
 #endif
 
+#if !defined (CONFIG_USER_ONLY)
+#include "sysemu.h"
+#endif
+
 /*****************************************************************************/
 /* Softmmu support */
 #if !defined (CONFIG_USER_ONLY)
+#include "softmmu_exec.h"
 
 #define MMUSUFFIX _mmu
 
@@ -50,18 +56,17 @@
    NULL, it means that the function was called in C code (i.e. not
    from generated code or from helper.c) */
 /* XXX: fix it to restore all registers */
-void tlb_fill (target_ulong addr, int is_write, int mmu_idx, void *retaddr)
+void tlb_fill(CPUState *env1, target_ulong addr, int is_write, int mmu_idx,
+              void *retaddr)
 {
     TranslationBlock *tb;
     CPUState *saved_env;
     unsigned long pc;
     int ret;
 
-    /* XXX: hack to restore env in all cases, even if not called from
-       generated code */
     saved_env = env;
-    env = cpu_single_env;
-    ret = cpu_s390x_handle_mmu_fault(env, addr, is_write, mmu_idx, 1);
+    env = env1;
+    ret = cpu_s390x_handle_mmu_fault(env, addr, is_write, mmu_idx);
     if (unlikely(ret != 0)) {
         if (likely(retaddr)) {
             /* now we have a real cpu fault */
@@ -630,6 +635,9 @@ uint32_t HELPER(ex)(uint32_t cc, uint64_t v1, uint64_t addr, uint64_t ret)
             break;
         case 0x700:
             cc = helper_xc(l, get_address(0, b1, d1), get_address(0, b2, d2));
+            break;
+        case 0xc00:
+            helper_tr(l, get_address(0, b1, d1), get_address(0, b2, d2));
             break;
         default:
             goto abort;
@@ -1628,6 +1636,15 @@ void HELPER(maebr)(uint32_t f1, uint32_t f3, uint32_t f2)
                                                      env->fregs[f3].l.upper,
                                                      &env->fpu_status),
                                          &env->fpu_status);
+}
+
+/* convert 32-bit float to 64-bit float */
+void HELPER(ldeb)(uint32_t f1, uint64_t a2)
+{
+    uint32_t v2;
+    v2 = ldl(a2);
+    env->fregs[f1].d = float32_to_float64(v2,
+                                          &env->fpu_status);
 }
 
 /* convert 64-bit float to 128-bit float */
@@ -2751,7 +2768,6 @@ uint64_t HELPER(iske)(uint64_t r2)
         return 0;
     }
 
-    /* XXX maybe use qemu's internal keys? */
     return env->storage_keys[addr / TARGET_PAGE_SIZE];
 }
 
@@ -2770,14 +2786,15 @@ void HELPER(sske)(uint32_t r1, uint64_t r2)
 /* reset reference bit extended */
 uint32_t HELPER(rrbe)(uint32_t r1, uint64_t r2)
 {
+    uint8_t re;
+    uint8_t key;
     if (r2 > ram_size) {
         return 0;
     }
 
-    /* XXX implement */
-#if 0
-    env->storage_keys[r2 / TARGET_PAGE_SIZE] &= ~SK_REFERENCED;
-#endif
+    key = env->storage_keys[r2 / TARGET_PAGE_SIZE];
+    re = key & (SK_R | SK_C);
+    env->storage_keys[r2 / TARGET_PAGE_SIZE] = (key & ~SK_R);
 
     /*
      * cc
@@ -2787,7 +2804,8 @@ uint32_t HELPER(rrbe)(uint32_t r1, uint64_t r2)
      * 2  Reference bit one; change bit zero
      * 3  Reference bit one; change bit one
      */
-    return 0;
+
+    return re >> 1;
 }
 
 /* compare and swap and purge */
@@ -2890,6 +2908,16 @@ uint32_t HELPER(sigp)(uint64_t order_code, uint32_t r1, uint64_t cpu_addr)
         env->regs[r1] &= 0xffffffff00000000ULL;
         cc = 1;
         break;
+#if !defined (CONFIG_USER_ONLY)
+    case SIGP_RESTART:
+        qemu_system_reset_request();
+        cpu_loop_exit(env);
+        break;
+    case SIGP_STOP:
+        qemu_system_shutdown_request();
+        cpu_loop_exit(env);
+        break;
+#endif
     default:
         /* unknown sigp */
         fprintf(stderr, "XXX unknown sigp: 0x%" PRIx64 "\n", order_code);
@@ -2940,6 +2968,13 @@ void HELPER(ipte)(uint64_t pte_addr, uint64_t vaddr)
     /* XXX we exploit the fact that Linux passes the exact virtual
            address here - it's not obliged to! */
     tlb_flush_page(env, page);
+
+    /* XXX 31-bit hack */
+    if (page & 0x80000000) {
+        tlb_flush_page(env, page & ~0x80000000);
+    } else {
+        tlb_flush_page(env, page | 0x80000000);
+    }
 }
 
 /* flush local tlb */

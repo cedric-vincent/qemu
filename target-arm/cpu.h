@@ -244,7 +244,7 @@ uint32_t do_arm_semihosting(CPUARMState *env);
 int cpu_arm_signal_handler(int host_signum, void *pinfo,
                            void *puc);
 int cpu_arm_handle_mmu_fault (CPUARMState *env, target_ulong address, int rw,
-                              int mmu_idx, int is_softmuu);
+                              int mmu_idx);
 #define cpu_handle_mmu_fault cpu_arm_handle_mmu_fault
 
 static inline void cpu_set_tls(CPUARMState *env, target_ulong newtls)
@@ -366,7 +366,7 @@ enum arm_features {
     ARM_FEATURE_VFP3,
     ARM_FEATURE_VFP_FP16,
     ARM_FEATURE_NEON,
-    ARM_FEATURE_DIV,
+    ARM_FEATURE_THUMB_DIV, /* divide supported in Thumb encoding */
     ARM_FEATURE_M, /* Microcontroller profile.  */
     ARM_FEATURE_OMAPCP, /* OMAP specific CP15 ops handling.  */
     ARM_FEATURE_THUMB2EE,
@@ -375,6 +375,8 @@ enum arm_features {
     ARM_FEATURE_V5,
     ARM_FEATURE_STRONGARM,
     ARM_FEATURE_VAPA, /* cp15 VA to PA lookups */
+    ARM_FEATURE_ARM_DIV, /* divide supported in ARM encoding */
+    ARM_FEATURE_VFP4, /* VFPv4 (implies that NEON is v2) */
 };
 
 static inline int arm_feature(CPUARMState *env, int feature)
@@ -421,6 +423,7 @@ void cpu_arm_set_cp_io(CPUARMState *env, int cpnum,
 #define ARM_CPUID_PXA270_C5   0x69054117
 #define ARM_CPUID_ARM1136     0x4117b363
 #define ARM_CPUID_ARM1136_R2  0x4107b362
+#define ARM_CPUID_ARM1176     0x410fb767
 #define ARM_CPUID_ARM11MPCORE 0x410fb022
 #define ARM_CPUID_CORTEXA8    0x410fc080
 #define ARM_CPUID_CORTEXA9    0x410fc090

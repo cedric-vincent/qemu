@@ -95,6 +95,6 @@ void tpi_init(TCGPluginInterface *tpi)
     tpi->before_gen_tb = before_gen_tb;
     tpi->after_gen_tb  = after_gen_tb;
 
-    icount_total = qemu_mallocz(tpi->nb_cpus * sizeof(uint64_t));
-    icount_total_args = qemu_mallocz(tpi->nb_cpus * sizeof(TCGArg *));
+    icount_total = g_malloc0(tpi->nb_cpus * sizeof(uint64_t));
+    icount_total_args = g_malloc0(tpi->nb_cpus * sizeof(TCGArg *));
 }

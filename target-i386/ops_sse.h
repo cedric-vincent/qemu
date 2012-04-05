@@ -859,51 +859,51 @@ void helper_insertq_i(XMMReg *d, int index, int length)
 void helper_haddps(XMMReg *d, XMMReg *s)
 {
     XMMReg r;
-    r.XMM_S(0) = d->XMM_S(0) + d->XMM_S(1);
-    r.XMM_S(1) = d->XMM_S(2) + d->XMM_S(3);
-    r.XMM_S(2) = s->XMM_S(0) + s->XMM_S(1);
-    r.XMM_S(3) = s->XMM_S(2) + s->XMM_S(3);
+    r.XMM_S(0) = float32_add(d->XMM_S(0), d->XMM_S(1), &env->sse_status);
+    r.XMM_S(1) = float32_add(d->XMM_S(2), d->XMM_S(3), &env->sse_status);
+    r.XMM_S(2) = float32_add(s->XMM_S(0), s->XMM_S(1), &env->sse_status);
+    r.XMM_S(3) = float32_add(s->XMM_S(2), s->XMM_S(3), &env->sse_status);
     *d = r;
 }
 
 void helper_haddpd(XMMReg *d, XMMReg *s)
 {
     XMMReg r;
-    r.XMM_D(0) = d->XMM_D(0) + d->XMM_D(1);
-    r.XMM_D(1) = s->XMM_D(0) + s->XMM_D(1);
+    r.XMM_D(0) = float64_add(d->XMM_D(0), d->XMM_D(1), &env->sse_status);
+    r.XMM_D(1) = float64_add(s->XMM_D(0), s->XMM_D(1), &env->sse_status);
     *d = r;
 }
 
 void helper_hsubps(XMMReg *d, XMMReg *s)
 {
     XMMReg r;
-    r.XMM_S(0) = d->XMM_S(0) - d->XMM_S(1);
-    r.XMM_S(1) = d->XMM_S(2) - d->XMM_S(3);
-    r.XMM_S(2) = s->XMM_S(0) - s->XMM_S(1);
-    r.XMM_S(3) = s->XMM_S(2) - s->XMM_S(3);
+    r.XMM_S(0) = float32_sub(d->XMM_S(0), d->XMM_S(1), &env->sse_status);
+    r.XMM_S(1) = float32_sub(d->XMM_S(2), d->XMM_S(3), &env->sse_status);
+    r.XMM_S(2) = float32_sub(s->XMM_S(0), s->XMM_S(1), &env->sse_status);
+    r.XMM_S(3) = float32_sub(s->XMM_S(2), s->XMM_S(3), &env->sse_status);
     *d = r;
 }
 
 void helper_hsubpd(XMMReg *d, XMMReg *s)
 {
     XMMReg r;
-    r.XMM_D(0) = d->XMM_D(0) - d->XMM_D(1);
-    r.XMM_D(1) = s->XMM_D(0) - s->XMM_D(1);
+    r.XMM_D(0) = float64_sub(d->XMM_D(0), d->XMM_D(1), &env->sse_status);
+    r.XMM_D(1) = float64_sub(s->XMM_D(0), s->XMM_D(1), &env->sse_status);
     *d = r;
 }
 
 void helper_addsubps(XMMReg *d, XMMReg *s)
 {
-    d->XMM_S(0) = d->XMM_S(0) - s->XMM_S(0);
-    d->XMM_S(1) = d->XMM_S(1) + s->XMM_S(1);
-    d->XMM_S(2) = d->XMM_S(2) - s->XMM_S(2);
-    d->XMM_S(3) = d->XMM_S(3) + s->XMM_S(3);
+    d->XMM_S(0) = float32_sub(d->XMM_S(0), s->XMM_S(0), &env->sse_status);
+    d->XMM_S(1) = float32_add(d->XMM_S(1), s->XMM_S(1), &env->sse_status);
+    d->XMM_S(2) = float32_sub(d->XMM_S(2), s->XMM_S(2), &env->sse_status);
+    d->XMM_S(3) = float32_add(d->XMM_S(3), s->XMM_S(3), &env->sse_status);
 }
 
 void helper_addsubpd(XMMReg *d, XMMReg *s)
 {
-    d->XMM_D(0) = d->XMM_D(0) - s->XMM_D(0);
-    d->XMM_D(1) = d->XMM_D(1) + s->XMM_D(1);
+    d->XMM_D(0) = float64_sub(d->XMM_D(0), s->XMM_D(0), &env->sse_status);
+    d->XMM_D(1) = float64_add(d->XMM_D(1), s->XMM_D(1), &env->sse_status);
 }
 
 /* XXX: unordered */
@@ -1996,11 +1996,13 @@ void glue(helper_pcmpestrm, SUFFIX) (Reg *d, Reg *s, uint32_t ctrl)
 
     if ((ctrl >> 6) & 1) {
         if (ctrl & 1)
-            for (i = 0; i <= 8; i--, res >>= 1)
+            for (i = 0; i < 8; i++, res >>= 1) {
                 d->W(i) = (res & 1) ? ~0 : 0;
+            }
         else
-            for (i = 0; i <= 16; i--, res >>= 1)
+            for (i = 0; i < 16; i++, res >>= 1) {
                 d->B(i) = (res & 1) ? ~0 : 0;
+            }
     } else {
         d->Q(1) = 0;
         d->Q(0) = res;
@@ -2028,11 +2030,13 @@ void glue(helper_pcmpistrm, SUFFIX) (Reg *d, Reg *s, uint32_t ctrl)
 
     if ((ctrl >> 6) & 1) {
         if (ctrl & 1)
-            for (i = 0; i <= 8; i--, res >>= 1)
+            for (i = 0; i < 8; i++, res >>= 1) {
                 d->W(i) = (res & 1) ? ~0 : 0;
+            }
         else
-            for (i = 0; i <= 16; i--, res >>= 1)
+            for (i = 0; i < 16; i++, res >>= 1) {
                 d->B(i) = (res & 1) ? ~0 : 0;
+            }
     } else {
         d->Q(1) = 0;
         d->Q(0) = res;

@@ -22,6 +22,8 @@
  * THE SOFTWARE.
  */
 
+#include <glib.h>
+
 #include "hw.h"
 #include "pc.h"
 #include "apic.h"
@@ -39,6 +41,8 @@
 #include "blockdev.h"
 #include "smbus.h"
 #include "xen.h"
+#include "memory.h"
+#include "exec-memory.h"
 #ifdef CONFIG_XEN
 #  include <xen/hvm/hvm_info_table.h>
 #endif
@@ -49,7 +53,7 @@ static const int ide_iobase[MAX_IDE_BUS] = { 0x1f0, 0x170 };
 static const int ide_iobase2[MAX_IDE_BUS] = { 0x3f6, 0x376 };
 static const int ide_irq[MAX_IDE_BUS] = { 14, 15 };
 
-static void ioapic_init(IsaIrqState *isa_irq_state)
+static void ioapic_init(GSIState *gsi_state)
 {
     DeviceState *dev;
     SysBusDevice *d;
@@ -61,12 +65,14 @@ static void ioapic_init(IsaIrqState *isa_irq_state)
     sysbus_mmio_map(d, 0, 0xfec00000);
 
     for (i = 0; i < IOAPIC_NUM_PINS; i++) {
-        isa_irq_state->ioapic[i] = qdev_get_gpio_in(dev, i);
+        gsi_state->ioapic_irq[i] = qdev_get_gpio_in(dev, i);
     }
 }
 
 /* PC hardware initialisation */
-static void pc_init1(ram_addr_t ram_size,
+static void pc_init1(MemoryRegion *system_memory,
+                     MemoryRegion *system_io,
+                     ram_addr_t ram_size,
                      const char *boot_device,
                      const char *kernel_filename,
                      const char *kernel_cmdline,
@@ -81,14 +87,18 @@ static void pc_init1(ram_addr_t ram_size,
     PCII440FXState *i440fx_state;
     int piix3_devfn = -1;
     qemu_irq *cpu_irq;
-    qemu_irq *isa_irq;
+    qemu_irq *gsi;
     qemu_irq *i8259;
     qemu_irq *cmos_s3;
     qemu_irq *smi_irq;
-    IsaIrqState *isa_irq_state;
+    GSIState *gsi_state;
     DriveInfo *hd[MAX_IDE_BUS * MAX_IDE_DEVS];
     BusState *idebus[MAX_IDE_BUS];
     ISADevice *rtc_state;
+    ISADevice *floppy;
+    MemoryRegion *ram_memory;
+    MemoryRegion *pci_memory;
+    MemoryRegion *rom_memory;
 
     pc_cpus_init(cpu_model);
 
@@ -104,11 +114,43 @@ static void pc_init1(ram_addr_t ram_size,
         below_4g_mem_size = ram_size;
     }
 
+    if (pci_enabled) {
+        pci_memory = g_new(MemoryRegion, 1);
+        memory_region_init(pci_memory, "pci", INT64_MAX);
+        rom_memory = pci_memory;
+    } else {
+        pci_memory = NULL;
+        rom_memory = system_memory;
+    }
+
     /* allocate ram and load rom/bios */
     if (!xen_enabled()) {
-        pc_memory_init(kernel_filename, kernel_cmdline, initrd_filename,
-                       below_4g_mem_size, above_4g_mem_size);
+        pc_memory_init(system_memory,
+                       kernel_filename, kernel_cmdline, initrd_filename,
+                       below_4g_mem_size, above_4g_mem_size,
+                       pci_enabled ? rom_memory : system_memory, &ram_memory);
     }
+
+    gsi_state = g_malloc0(sizeof(*gsi_state));
+    gsi = qemu_allocate_irqs(gsi_handler, gsi_state, GSI_NUM_PINS);
+
+    if (pci_enabled) {
+        pci_bus = i440fx_init(&i440fx_state, &piix3_devfn, gsi,
+                              system_memory, system_io, ram_size,
+                              below_4g_mem_size,
+                              0x100000000ULL - below_4g_mem_size,
+                              0x100000000ULL + above_4g_mem_size,
+                              (sizeof(target_phys_addr_t) == 4
+                               ? 0
+                               : ((uint64_t)1 << 62)),
+                              pci_memory, ram_memory);
+    } else {
+        pci_bus = NULL;
+        i440fx_state = NULL;
+        isa_bus_new(NULL, system_io);
+        no_hpet = 1;
+    }
+    isa_bus_irqs(gsi);
 
     if (!xen_enabled()) {
         cpu_irq = pc_allocate_cpu_irq();
@@ -116,23 +158,15 @@ static void pc_init1(ram_addr_t ram_size,
     } else {
         i8259 = xen_interrupt_controller_init();
     }
-    isa_irq_state = qemu_mallocz(sizeof(*isa_irq_state));
-    isa_irq_state->i8259 = i8259;
-    if (pci_enabled) {
-        ioapic_init(isa_irq_state);
-    }
-    isa_irq = qemu_allocate_irqs(isa_irq_handler, isa_irq_state, 24);
 
-    if (pci_enabled) {
-        pci_bus = i440fx_init(&i440fx_state, &piix3_devfn, isa_irq, ram_size);
-    } else {
-        pci_bus = NULL;
-        i440fx_state = NULL;
-        isa_bus_new(NULL);
+    for (i = 0; i < ISA_NUM_IRQS; i++) {
+        gsi_state->i8259_irq[i] = i8259[i];
     }
-    isa_bus_irqs(isa_irq);
+    if (pci_enabled) {
+        ioapic_init(gsi_state);
+    }
 
-    pc_register_ferr_irq(isa_get_irq(13));
+    pc_register_ferr_irq(gsi[13]);
 
     pc_vga_init(pci_enabled? pci_bus: NULL);
 
@@ -141,7 +175,7 @@ static void pc_init1(ram_addr_t ram_size,
     }
 
     /* init basic PC hardware */
-    pc_basic_device_init(isa_irq, &rtc_state, xen_enabled());
+    pc_basic_device_init(gsi, &rtc_state, &floppy, xen_enabled());
 
     for(i = 0; i < nb_nics; i++) {
         NICInfo *nd = &nd_table[i];
@@ -155,7 +189,11 @@ static void pc_init1(ram_addr_t ram_size,
     ide_drive_get(hd, MAX_IDE_BUS);
     if (pci_enabled) {
         PCIDevice *dev;
-        dev = pci_piix3_ide_init(pci_bus, hd, piix3_devfn + 1);
+        if (xen_enabled()) {
+            dev = pci_piix3_xen_ide_init(pci_bus, hd, piix3_devfn + 1);
+        } else {
+            dev = pci_piix3_ide_init(pci_bus, hd, piix3_devfn + 1);
+        }
         idebus[0] = qdev_get_child_bus(&dev->qdev, "ide.0");
         idebus[1] = qdev_get_child_bus(&dev->qdev, "ide.1");
     } else {
@@ -167,10 +205,10 @@ static void pc_init1(ram_addr_t ram_size,
         }
     }
 
-    audio_init(isa_irq, pci_enabled ? pci_bus : NULL);
+    audio_init(gsi, pci_enabled ? pci_bus : NULL);
 
     pc_cmos_init(below_4g_mem_size, above_4g_mem_size, boot_device,
-                 idebus[0], idebus[1], rtc_state);
+                 floppy, idebus[0], idebus[1], rtc_state);
 
     if (pci_enabled && usb_enabled) {
         usb_uhci_piix3_init(pci_bus, piix3_devfn + 2);
@@ -187,13 +225,9 @@ static void pc_init1(ram_addr_t ram_size,
         smi_irq = qemu_allocate_irqs(pc_acpi_smi_interrupt, first_cpu, 1);
         /* TODO: Populate SPD eeprom data.  */
         smbus = piix4_pm_init(pci_bus, piix3_devfn + 3, 0xb100,
-                              isa_get_irq(9), *cmos_s3, *smi_irq,
+                              gsi[9], *cmos_s3, *smi_irq,
                               kvm_enabled());
         smbus_eeprom_init(smbus, 8, NULL, 0);
-    }
-
-    if (i440fx_state) {
-        i440fx_init_memory_mappings(i440fx_state);
     }
 
     if (pci_enabled) {
@@ -208,7 +242,9 @@ static void pc_init_pci(ram_addr_t ram_size,
                         const char *initrd_filename,
                         const char *cpu_model)
 {
-    pc_init1(ram_size, boot_device,
+    pc_init1(get_system_memory(),
+             get_system_io(),
+             ram_size, boot_device,
              kernel_filename, kernel_cmdline,
              initrd_filename, cpu_model, 1, 1);
 }
@@ -220,7 +256,9 @@ static void pc_init_pci_no_kvmclock(ram_addr_t ram_size,
                                     const char *initrd_filename,
                                     const char *cpu_model)
 {
-    pc_init1(ram_size, boot_device,
+    pc_init1(get_system_memory(),
+             get_system_io(),
+             ram_size, boot_device,
              kernel_filename, kernel_cmdline,
              initrd_filename, cpu_model, 1, 0);
 }
@@ -234,7 +272,9 @@ static void pc_init_isa(ram_addr_t ram_size,
 {
     if (cpu_model == NULL)
         cpu_model = "486";
-    pc_init1(ram_size, boot_device,
+    pc_init1(get_system_memory(),
+             get_system_io(),
+             ram_size, boot_device,
              kernel_filename, kernel_cmdline,
              initrd_filename, cpu_model, 0, 1);
 }
@@ -257,13 +297,56 @@ static void pc_xen_hvm_init(ram_addr_t ram_size,
 }
 #endif
 
-static QEMUMachine pc_machine = {
-    .name = "pc-0.14",
+static QEMUMachine pc_machine_v1_0 = {
+    .name = "pc-1.0",
     .alias = "pc",
     .desc = "Standard PC",
     .init = pc_init_pci,
     .max_cpus = 255,
     .is_default = 1,
+};
+
+static QEMUMachine pc_machine_v0_15 = {
+    .name = "pc-0.15",
+    .desc = "Standard PC",
+    .init = pc_init_pci,
+    .max_cpus = 255,
+    .is_default = 1,
+};
+
+static QEMUMachine pc_machine_v0_14 = {
+    .name = "pc-0.14",
+    .desc = "Standard PC",
+    .init = pc_init_pci,
+    .max_cpus = 255,
+    .compat_props = (GlobalProperty[]) {
+        {
+            .driver   = "qxl",
+            .property = "revision",
+            .value    = stringify(2),
+        },{
+            .driver   = "qxl-vga",
+            .property = "revision",
+            .value    = stringify(2),
+        },{
+            .driver   = "virtio-blk-pci",
+            .property = "event_idx",
+            .value    = "off",
+        },{
+            .driver   = "virtio-serial-pci",
+            .property = "event_idx",
+            .value    = "off",
+        },{
+            .driver   = "virtio-net-pci",
+            .property = "event_idx",
+            .value    = "off",
+        },{
+            .driver   = "virtio-balloon-pci",
+            .property = "event_idx",
+            .value    = "off",
+        },
+        { /* end of list */ }
+    },
 };
 
 static QEMUMachine pc_machine_v0_13 = {
@@ -300,6 +383,14 @@ static QEMUMachine pc_machine_v0_13 = {
             .driver   = "virtio-net-pci",
             .property = "event_idx",
             .value    = "off",
+        },{
+            .driver   = "virtio-balloon-pci",
+            .property = "event_idx",
+            .value    = "off",
+        },{
+            .driver   = "AC97",
+            .property = "use_broken_id",
+            .value    = stringify(1),
         },
         { /* end of list */ }
     },
@@ -343,6 +434,14 @@ static QEMUMachine pc_machine_v0_12 = {
             .driver   = "virtio-net-pci",
             .property = "event_idx",
             .value    = "off",
+        },{
+            .driver   = "virtio-balloon-pci",
+            .property = "event_idx",
+            .value    = "off",
+        },{
+            .driver   = "AC97",
+            .property = "use_broken_id",
+            .value    = stringify(1),
         },
         { /* end of list */ }
     }
@@ -394,6 +493,14 @@ static QEMUMachine pc_machine_v0_11 = {
             .driver   = "virtio-net-pci",
             .property = "event_idx",
             .value    = "off",
+        },{
+            .driver   = "virtio-balloon-pci",
+            .property = "event_idx",
+            .value    = "off",
+        },{
+            .driver   = "AC97",
+            .property = "use_broken_id",
+            .value    = stringify(1),
         },
         { /* end of list */ }
     }
@@ -457,6 +564,14 @@ static QEMUMachine pc_machine_v0_10 = {
             .driver   = "virtio-net-pci",
             .property = "event_idx",
             .value    = "off",
+        },{
+            .driver   = "virtio-balloon-pci",
+            .property = "event_idx",
+            .value    = "off",
+        },{
+            .driver   = "AC97",
+            .property = "use_broken_id",
+            .value    = stringify(1),
         },
         { /* end of list */ }
     },
@@ -481,7 +596,9 @@ static QEMUMachine xenfv_machine = {
 
 static void pc_machine_init(void)
 {
-    qemu_register_machine(&pc_machine);
+    qemu_register_machine(&pc_machine_v1_0);
+    qemu_register_machine(&pc_machine_v0_15);
+    qemu_register_machine(&pc_machine_v0_14);
     qemu_register_machine(&pc_machine_v0_13);
     qemu_register_machine(&pc_machine_v0_12);
     qemu_register_machine(&pc_machine_v0_11);

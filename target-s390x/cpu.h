@@ -280,7 +280,7 @@ void do_interrupt (CPUState *env);
 int cpu_s390x_signal_handler(int host_signum, void *pinfo,
                            void *puc);
 int cpu_s390x_handle_mmu_fault (CPUS390XState *env, target_ulong address, int rw,
-                              int mmu_idx, int is_softmuu);
+                                int mmu_idx);
 #define cpu_handle_mmu_fault cpu_s390x_handle_mmu_fault
 
 
@@ -309,10 +309,21 @@ static inline void kvm_s390_interrupt_internal(CPUState *env, int type,
 }
 #endif
 CPUState *s390_cpu_addr2state(uint16_t cpu_addr);
+void s390_add_running_cpu(CPUState *env);
+unsigned s390_del_running_cpu(CPUState *env);
 
 /* from s390-virtio-bus */
 extern const target_phys_addr_t virtio_size;
 
+#else
+static inline void s390_add_running_cpu(CPUState *env)
+{
+}
+
+static inline unsigned s390_del_running_cpu(CPUState *env)
+{
+    return 0;
+}
 #endif
 void cpu_lock(void);
 void cpu_unlock(void);
@@ -698,7 +709,7 @@ typedef struct LowCore
     /* align to the top of the prefix area */
 
     uint8_t         pad18[0x2000-0x1400];      /* 0x1400 */
-} __attribute__((packed)) LowCore;
+} QEMU_PACKED LowCore;
 
 /* STSI */
 #define STSI_LEVEL_MASK         0x00000000f0000000ULL
@@ -819,6 +830,10 @@ struct sysib_322 {
 #define _PAGE_RO        0x200            /* HW read-only bit  */
 #define _PAGE_INVALID   0x400            /* HW invalid bit    */
 
+#define SK_C                    (0x1 << 1)
+#define SK_R                    (0x1 << 2)
+#define SK_F                    (0x1 << 3)
+#define SK_ACC_MASK             (0xf << 4)
 
 
 /* EBCDIC handling */

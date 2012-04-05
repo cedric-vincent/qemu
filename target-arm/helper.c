@@ -35,6 +35,12 @@ static uint32_t arm1136_cp15_c0_c1[8] =
 static uint32_t arm1136_cp15_c0_c2[8] =
 { 0x00140011, 0x12002111, 0x11231111, 0x01102131, 0x141, 0, 0, 0 };
 
+static uint32_t arm1176_cp15_c0_c1[8] =
+{ 0x111, 0x11, 0x33, 0, 0x01130003, 0x10030302, 0x01222100, 0 };
+
+static uint32_t arm1176_cp15_c0_c2[8] =
+{ 0x0140011, 0x12002111, 0x11231121, 0x01102131, 0x01141, 0, 0, 0 };
+
 static uint32_t cpu_arm_find_by_name(const char *name);
 
 static inline void set_feature(CPUARMState *env, int feature)
@@ -93,6 +99,22 @@ static void cpu_reset_model_id(CPUARMState *env, uint32_t id)
         env->vfp.xregs[ARM_VFP_MVFR1] = 0x00000000;
         memcpy(env->cp15.c0_c1, arm1136_cp15_c0_c1, 8 * sizeof(uint32_t));
         memcpy(env->cp15.c0_c2, arm1136_cp15_c0_c2, 8 * sizeof(uint32_t));
+        env->cp15.c0_cachetype = 0x1dd20d2;
+        env->cp15.c1_sys = 0x00050078;
+        break;
+    case ARM_CPUID_ARM1176:
+        set_feature(env, ARM_FEATURE_V4T);
+        set_feature(env, ARM_FEATURE_V5);
+        set_feature(env, ARM_FEATURE_V6);
+        set_feature(env, ARM_FEATURE_V6K);
+        set_feature(env, ARM_FEATURE_VFP);
+        set_feature(env, ARM_FEATURE_AUXCR);
+        set_feature(env, ARM_FEATURE_VAPA);
+        env->vfp.xregs[ARM_VFP_FPSID] = 0x410120b5;
+        env->vfp.xregs[ARM_VFP_MVFR0] = 0x11111111;
+        env->vfp.xregs[ARM_VFP_MVFR1] = 0x00000000;
+        memcpy(env->cp15.c0_c1, arm1176_cp15_c0_c1, 8 * sizeof(uint32_t));
+        memcpy(env->cp15.c0_c2, arm1176_cp15_c0_c2, 8 * sizeof(uint32_t));
         env->cp15.c0_cachetype = 0x1dd20d2;
         env->cp15.c1_sys = 0x00050078;
         break;
@@ -171,7 +193,7 @@ static void cpu_reset_model_id(CPUARMState *env, uint32_t id)
         set_feature(env, ARM_FEATURE_THUMB2);
         set_feature(env, ARM_FEATURE_V7);
         set_feature(env, ARM_FEATURE_M);
-        set_feature(env, ARM_FEATURE_DIV);
+        set_feature(env, ARM_FEATURE_THUMB_DIV);
         break;
     case ARM_CPUID_ANY: /* For userspace emulation.  */
         set_feature(env, ARM_FEATURE_V4T);
@@ -182,10 +204,11 @@ static void cpu_reset_model_id(CPUARMState *env, uint32_t id)
         set_feature(env, ARM_FEATURE_THUMB2);
         set_feature(env, ARM_FEATURE_VFP);
         set_feature(env, ARM_FEATURE_VFP3);
+        set_feature(env, ARM_FEATURE_VFP4);
         set_feature(env, ARM_FEATURE_VFP_FP16);
         set_feature(env, ARM_FEATURE_NEON);
         set_feature(env, ARM_FEATURE_THUMB2EE);
-        set_feature(env, ARM_FEATURE_DIV);
+        set_feature(env, ARM_FEATURE_ARM_DIV);
         set_feature(env, ARM_FEATURE_V7MP);
         break;
     case ARM_CPUID_TI915T:
@@ -239,6 +262,9 @@ static void cpu_reset_model_id(CPUARMState *env, uint32_t id)
     if (arm_feature(env, ARM_FEATURE_V7)) {
         set_feature(env, ARM_FEATURE_VAPA);
     }
+    if (arm_feature(env, ARM_FEATURE_ARM_DIV)) {
+        set_feature(env, ARM_FEATURE_THUMB_DIV);
+    }
 }
 
 void cpu_reset(CPUARMState *env)
@@ -276,7 +302,7 @@ void cpu_reset(CPUARMState *env)
         if (rom) {
             /* We should really use ldl_phys here, in case the guest
                modified flash and reset itself.  However images
-               loaded via -kenrel have not been copied yet, so load the
+               loaded via -kernel have not been copied yet, so load the
                values directly from there.  */
             env->regs[13] = ldl_p(rom);
             pc = ldl_p(rom + 4);
@@ -362,7 +388,7 @@ CPUARMState *cpu_arm_init(const char *cpu_model)
     id = cpu_arm_find_by_name(cpu_model);
     if (id == 0)
         return NULL;
-    env = qemu_mallocz(sizeof(CPUARMState));
+    env = g_malloc0(sizeof(CPUARMState));
     cpu_exec_init(env);
     if (!inited) {
         inited = 1;
@@ -397,6 +423,7 @@ static const struct arm_cpu_t arm_cpu_names[] = {
     { ARM_CPUID_ARM1026, "arm1026"},
     { ARM_CPUID_ARM1136, "arm1136"},
     { ARM_CPUID_ARM1136_R2, "arm1136-r2"},
+    { ARM_CPUID_ARM1176, "arm1176"},
     { ARM_CPUID_ARM11MPCORE, "arm11mpcore"},
     { ARM_CPUID_CORTEXM3, "cortex-m3"},
     { ARM_CPUID_CORTEXA8, "cortex-a8"},
@@ -448,7 +475,7 @@ static uint32_t cpu_arm_find_by_name(const char *name)
 
 void cpu_arm_close(CPUARMState *env)
 {
-    free(env);
+    g_free(env);
 }
 
 uint32_t cpsr_read(CPUARMState *env)
@@ -559,7 +586,7 @@ void do_interrupt (CPUState *env)
 }
 
 int cpu_arm_handle_mmu_fault (CPUState *env, target_ulong address, int rw,
-                              int mmu_idx, int is_softmmu)
+                              int mmu_idx)
 {
     if (rw == 2) {
         env->exception_index = EXCP_PREFETCH_ABORT;
@@ -965,7 +992,7 @@ static inline int check_ap(CPUState *env, int ap, int domain, int access_type,
   case 6:
       return prot_ro;
   case 7:
-      if (!arm_feature (env, ARM_FEATURE_V7))
+      if (!arm_feature (env, ARM_FEATURE_V6K))
           return 0;
       return prot_ro;
   default:
@@ -1271,7 +1298,7 @@ static inline int get_phys_addr(CPUState *env, uint32_t address,
 }
 
 int cpu_arm_handle_mmu_fault (CPUState *env, target_ulong address,
-                              int access_type, int mmu_idx, int is_softmmu)
+                              int access_type, int mmu_idx)
 {
     uint32_t phys_addr;
     target_ulong page_size;
@@ -1865,6 +1892,7 @@ uint32_t HELPER(get_cp15)(CPUState *env, uint32_t insn)
                 return 1;
             case ARM_CPUID_ARM1136:
             case ARM_CPUID_ARM1136_R2:
+            case ARM_CPUID_ARM1176:
                 return 7;
             case ARM_CPUID_ARM11MPCORE:
                 return 1;
@@ -3015,8 +3043,7 @@ float32 HELPER(rsqrte_f32)(float32 a, CPUState *env)
 
     val64 = float64_val(f64);
 
-    val = ((val64 >> 63)  & 0x80000000)
-        | ((result_exp & 0xff) << 23)
+    val = ((result_exp & 0xff) << 23)
         | ((val64 >> 29)  & 0x7fffff);
     return make_float32(val);
 }
@@ -3056,6 +3083,19 @@ uint32_t HELPER(rsqrte_u32)(uint32_t a, CPUState *env)
     f64 = recip_sqrt_estimate(f64, env);
 
     return 0x80000000 | ((float64_val(f64) >> 21) & 0x7fffffff);
+}
+
+/* VFPv4 fused multiply-accumulate */
+float32 VFP_HELPER(muladd, s)(float32 a, float32 b, float32 c, void *fpstp)
+{
+    float_status *fpst = fpstp;
+    return float32_muladd(a, b, c, 0, fpst);
+}
+
+float64 VFP_HELPER(muladd, d)(float64 a, float64 b, float64 c, void *fpstp)
+{
+    float_status *fpst = fpstp;
+    return float64_muladd(a, b, c, 0, fpst);
 }
 
 void HELPER(set_teecr)(CPUState *env, uint32_t val)
