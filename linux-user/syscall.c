@@ -5175,7 +5175,6 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
                 else {
                     tmsp->tms_utime  = tswapl(host_to_target_clock_t(tms.tms_utime));
                 }
-                tmsp->tms_utime = tswapal(host_to_target_clock_t(tms.tms_utime));
                 tmsp->tms_stime = tswapal(host_to_target_clock_t(tms.tms_stime));
                 tmsp->tms_cutime = tswapal(host_to_target_clock_t(tms.tms_cutime));
                 tmsp->tms_cstime = tswapal(host_to_target_clock_t(tms.tms_cstime));
