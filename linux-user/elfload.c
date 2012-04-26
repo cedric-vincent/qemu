@@ -1484,7 +1484,7 @@ static void load_elf_image(const char *image_name, int image_fd,
        amount of memory to handle that.  */
     loaddr = -1, hiaddr = 0;
     for (i = 0; i < ehdr->e_phnum; ++i) {
-        if (phdr[i].p_type == PT_LOAD) {
+        if (phdr[i].p_type == PT_LOAD && phdr[i].p_memsz) {
             abi_ulong a = phdr[i].p_vaddr;
             if (a < loaddr) {
                 loaddr = a;
@@ -1552,7 +1552,7 @@ static void load_elf_image(const char *image_name, int image_fd,
 
     for (i = 0; i < ehdr->e_phnum; i++) {
         struct elf_phdr *eppnt = phdr + i;
-        if (eppnt->p_type == PT_LOAD) {
+        if (eppnt->p_type == PT_LOAD && eppnt->p_memsz) {
             abi_ulong vaddr, vaddr_po, vaddr_ps, vaddr_ef, vaddr_em;
             int elf_prot = 0;
 
