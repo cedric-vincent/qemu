@@ -33,7 +33,9 @@ static void cpu_restore_state_from_retaddr(void *retaddr)
         if (tb) {
             /* the PC is inside the translated code. It means that we have
                a virtual CPU fault */
+            spin_lock(&tb_lock);
             cpu_restore_state(tb, env, pc);
+            spin_unlock(&tb_lock);
         }
     }
 }
@@ -522,6 +524,7 @@ void helper_fcmp_eq_FT(float32 t0, float32 t1)
     relation = float32_compare(t0, t1, &env->fp_status);
     if (unlikely(relation == float_relation_unordered)) {
         update_fpscr(GETPC());
+        clr_t();
     } else if (relation == float_relation_equal) {
 	set_t();
     } else {
@@ -537,6 +540,7 @@ void helper_fcmp_eq_DT(float64 t0, float64 t1)
     relation = float64_compare(t0, t1, &env->fp_status);
     if (unlikely(relation == float_relation_unordered)) {
         update_fpscr(GETPC());
+        clr_t();
     } else if (relation == float_relation_equal) {
 	set_t();
     } else {
@@ -552,6 +556,7 @@ void helper_fcmp_gt_FT(float32 t0, float32 t1)
     relation = float32_compare(t0, t1, &env->fp_status);
     if (unlikely(relation == float_relation_unordered)) {
         update_fpscr(GETPC());
+        clr_t();
     } else if (relation == float_relation_greater) {
 	set_t();
     } else {
@@ -567,6 +572,7 @@ void helper_fcmp_gt_DT(float64 t0, float64 t1)
     relation = float64_compare(t0, t1, &env->fp_status);
     if (unlikely(relation == float_relation_unordered)) {
         update_fpscr(GETPC());
+        clr_t();
     } else if (relation == float_relation_greater) {
 	set_t();
     } else {
