@@ -187,6 +187,7 @@ opengl=""
 zlib="yes"
 guest_agent="yes"
 libiscsi=""
+syscall_fwd_compat="no"
 
 # parse CC options first
 for opt do
@@ -797,6 +798,10 @@ for opt do
   ;;
   --disable-guest-agent) guest_agent="no"
   ;;
+  --enable-syscall-fwd-compat) syscall_fwd_compat="yes"
+  ;;
+  --disable-syscall-fwd-compat) syscall_fwd_compat="no"
+  ;;
   *) echo "ERROR: unknown option $opt"; show_help="yes"
   ;;
   esac
@@ -1085,6 +1090,8 @@ echo "  --disable-usb-redir      disable usb network redirection support"
 echo "  --enable-usb-redir       enable usb network redirection support"
 echo "  --disable-guest-agent    disable building of the QEMU Guest Agent"
 echo "  --enable-guest-agent     enable building of the QEMU Guest Agent"
+echo "  --enable-syscall-fwd-compat     enable syscall forward compatibility in linux-user mode"
+echo "  --disable-syscall-fwd-compat    disable syscall forward compatibility in linux-user mode (default)"
 echo ""
 echo "NOTE: The object files are built at the place where configure is launched"
 exit 1
@@ -2858,6 +2865,7 @@ echo "usb net redir     $usb_redir"
 echo "OpenGL support    $opengl"
 echo "libiscsi support  $libiscsi"
 echo "build guest agent $guest_agent"
+echo "syscall fwd compat $syscall_fwd_compat"
 
 if test "$sdl_too_old" = "yes"; then
 echo "-> Your SDL version is too old - please upgrade to have SDL support"
@@ -3282,6 +3290,9 @@ echo "LIBS+=$LIBS" >> $config_host_mak
 echo "LIBS_TOOLS+=$libs_tools" >> $config_host_mak
 echo "EXESUF=$EXESUF" >> $config_host_mak
 echo "LIBS_QGA+=$libs_qga" >> $config_host_mak
+if test "$syscall_fwd_compat" = "yes" ; then
+  echo "CONFIG_SYSCALL_FWD_COMPAT=y" >> $config_host_mak
+fi
 
 # generate list of library paths for linker script
 
