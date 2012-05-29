@@ -576,6 +576,10 @@ static void _decode_opc(DisasContext * ctx)
 	tcg_gen_xori_i32(cpu_fpscr, cpu_fpscr, FPSCR_SZ);
 	ctx->bstate = BS_STOP;
 	return;
+    case 0xf7fd:		/* fpchg */
+	tcg_gen_xori_i32(cpu_fpscr, cpu_fpscr, FPSCR_PR);
+	ctx->bstate = BS_STOP;
+	return;
     case 0x0009:		/* nop */
 	return;
     case 0x001b:		/* sleep */
