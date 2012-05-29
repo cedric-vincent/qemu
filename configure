@@ -109,6 +109,7 @@ target_list=""
 # is impossible without a --enable-foo that exits if a feature is not found.
 
 bluez=""
+glib_compat=""
 brlapi=""
 curl=""
 curses=""
@@ -1954,6 +1955,22 @@ else
     exit 1
 fi
 
+# check availability of some glib functions
+if test -z "$glib_compat"; then
+    cat > $TMPC << EOF
+#include <glib.h>
+int main(void) { 
+  gpointer p = g_try_malloc0(8);
+  return 0;
+}
+EOF
+    if compile_prog "$glib_cflags" "$glib_libs"; then
+	glib_compat=no
+    else
+	glib_compat=yes
+    fi
+fi
+
 ##########################################
 # pthread probe
 PTHREADLIBS_LIST="-pthread -lpthread -lpthreadGC2"
@@ -3115,6 +3132,9 @@ if test "$bluez" = "yes" ; then
   echo "BLUEZ_CFLAGS=$bluez_cflags" >> $config_host_mak
 fi
 echo "GLIB_CFLAGS=$glib_cflags" >> $config_host_mak
+if test "$glib_compat" = "yes" ; then
+  echo "CONFIG_GLIB_COMPAT=y" >> $config_host_mak
+fi
 if test "$xen" = "yes" ; then
   echo "CONFIG_XEN_BACKEND=y" >> $config_host_mak
   echo "CONFIG_XEN_CTRL_INTERFACE_VERSION=$xen_ctrl_version" >> $config_host_mak
