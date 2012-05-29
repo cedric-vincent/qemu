@@ -65,6 +65,14 @@ typedef struct Monitor Monitor;
 #define TIME_MAX LONG_MAX
 #endif
 
+#ifndef RLIMIT_NICE
+#define RLIMIT_NICE 13
+#endif
+
+#ifndef RLIMIT_RTPRIO
+#define RLIMIT_RTPRIO 14
+#endif
+
 #ifndef CONFIG_IOVEC
 #define CONFIG_IOVEC
 struct iovec {
