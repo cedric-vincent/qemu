@@ -419,8 +419,7 @@ common-obj-y += qmp.o hmp.o
 qga-nested-y = guest-agent-commands.o guest-agent-command-state.o
 qga-obj-y = $(addprefix qga/, $(qga-nested-y))
 qga-obj-y += qemu-ga.o qemu-sockets.o module.o qemu-option.o
-qga-obj-$(CONFIG_WIN32) += oslib-win32.o
-qga-obj-$(CONFIG_POSIX) += oslib-posix.o
+qga-obj-y += $(oslib-obj-y)
 
 vl.o: QEMU_CFLAGS+=$(GPROF_CFLAGS)
 
