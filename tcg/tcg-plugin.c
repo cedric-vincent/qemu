@@ -113,6 +113,15 @@ void tcg_plugin_load(const char *name)
 
     tpi.nb_cpus = max_cpus;
 
+    /* Plugins output is, in order of priority:
+     *
+     * 1. the file $TPI_OUTPUT.$PID if the environment variable
+     *    TPI_OUTPUT is defined.
+     *
+     * 2. a duplicate of the error stream.
+     *
+     * 3. the error stream itself.
+     */
     tpi.output = NULL;
     if (getenv("TPI_OUTPUT")) {
         char path[PATH_MAX];
@@ -122,6 +131,8 @@ void tcg_plugin_load(const char *name)
             perror("plugin: warning: can't open TPI_OUTPUT.$PID (fall back to stderr)");
         }
     }
+    if (!tpi.output)
+        tpi.output = fdopen(dup(fileno(stderr)), "a");
     if (!tpi.output)
         tpi.output = stderr;
 
