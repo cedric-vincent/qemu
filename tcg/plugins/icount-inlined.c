@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <inttypes.h>
+#include <unistd.h>
 
 #include "tcg-op.h"
 #include "tcg-plugin.h"
@@ -40,8 +41,8 @@ static void cpus_stopped(const TCGPluginInterface *tpi)
     unsigned int i;
     for (i = 0; i < tpi->nb_cpus; i++) {
         fprintf(tpi->output,
-                "Number of executed instructions on CPU #%d = %" PRIu64 "\n",
-                i, icount_total[i]);
+                "%s (%d): number of executed instructions on CPU #%d = %" PRIu64 "\n",
+                tcg_plugin_get_filename(), getpid(), i, icount_total[i]);
     }
 }
 

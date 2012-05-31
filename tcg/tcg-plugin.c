@@ -452,3 +452,16 @@ end:
         pthread_mutex_unlock(&helper_mutex);
     }
 }
+
+#if !defined(CONFIG_USER_ONLY)
+const char *tcg_plugin_get_filename(void)
+{
+    return "<system>";
+}
+#else
+extern const char *exec_path;
+const char *tcg_plugin_get_filename(void)
+{
+    return exec_path;
+}
+#endif

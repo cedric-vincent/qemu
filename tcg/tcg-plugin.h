@@ -52,6 +52,7 @@
     void tcg_plugin_before_gen_tb(CPUState *env, TranslationBlock *tb);
     void tcg_plugin_after_gen_tb(CPUState *env, TranslationBlock *tb);
     void tcg_plugin_after_gen_opc(TCGOpcode opname, uint16_t *opcode, TCGArg *opargs, uint8_t nb_args);
+    const char *tcg_plugin_get_filename(void);
 #else
 #   define tcg_plugin_enabled() false
 #   define tcg_plugin_load(dso)
@@ -60,7 +61,8 @@
 #   define tcg_plugin_before_gen_tb(env, tb)
 #   define tcg_plugin_after_gen_tb(env, tb)
 #   define tcg_plugin_after_gen_opc(opname, tcg_opcode, tcg_opargs_, nb_args)
-#endif /* !CONFIG_INSTRUMENTATION */
+#   define tcg_plugin_get_filename() "<unknown>"
+#endif /* !CONFIG_TCG_PLUGIN */
 
 /***********************************************************************
  * TCG plugin interface.

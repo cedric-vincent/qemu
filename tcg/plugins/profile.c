@@ -130,6 +130,7 @@ static void cpus_stopped(const TCGPluginInterface *tpi)
     snprintf(format, sizeof(format), "%%-%zus | %%-%zus | %%%zu" PRIu64 " | %%%zu" PRIu64 "\n",
              symbol_length, filename_length, nb_bytes_length, nb_instr_length);
 
+    fprintf(tpi->output, "%s (%d):\n", tcg_plugin_get_filename(), getpid());
     g_hash_table_foreach(hash, (GHFunc)print_entry, tpi->output);
 }
 

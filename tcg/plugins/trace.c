@@ -42,8 +42,8 @@ static void pre_tb_helper_code(const TCGPluginInterface *tpi,
     if (!info.icount)
         return;
 
-    fprintf(tpi->output, "CPU #%" PRIu32 " - 0x%016" PRIx64 " [%" PRIu32 "]: %" PRIu32 " instruction(s) in '%s:%s'\n",
-            info.cpu_index, address, info.size, info.icount,
+    fprintf(tpi->output, "%s (%d): CPU #%" PRIu32 " - 0x%016" PRIx64 " [%" PRIu32 "]: %" PRIu32 " instruction(s) in '%s:%s'\n",
+            tcg_plugin_get_filename(), getpid(), info.cpu_index, address, info.size, info.icount,
             filename[0] != '\0' ? filename : "<unknown>",
             symbol[0] != '\0' ? symbol : "<unknown>");
 }
