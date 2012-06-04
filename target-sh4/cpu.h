@@ -187,6 +187,10 @@ typedef struct CPUSH4State {
     int in_sleep;		/* SR_BL ignored during sleep */
     memory_content *movcal_backup;
     memory_content **movcal_backup_tail;
+
+#if defined(CONFIG_USER_ONLY)
+    uint32_t gUSA_end;
+#endif
 } CPUSH4State;
 
 CPUSH4State *cpu_sh4_init(const char *cpu_model);
