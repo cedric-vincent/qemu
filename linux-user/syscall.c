@@ -5677,6 +5677,12 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
             struct timeval tv;
             ret = get_errno(gettimeofday(&tv, NULL));
             if (!is_error(ret)) {
+                if (clock_ifetch) {
+                    assert(count_ifetch);
+                    /* Look at the comment for clock_gettime as we use the same algorithm */
+                    tv.tv_sec  = ((CPUState*)cpu_env)->ifetch_counter / clock_ifetch;
+                    tv.tv_usec = ((((CPUState*)cpu_env)->ifetch_counter - (uint64_t)tv.tv_sec * clock_ifetch) * 1000000) / clock_ifetch;
+                }
                 if (copy_to_user_timeval(arg1, &tv))
                     goto efault;
             }
