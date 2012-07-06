@@ -633,6 +633,7 @@ static void _decode_opc(DisasContext * ctx)
 	return;
     case 0x9000:		/* mov.w @(disp,PC),Rn */
 	{
+	    CHECK_NOT_DELAY_SLOT
 	    TCGv addr = tcg_const_i32(ctx->pc + 4 + B7_0 * 2);
 	    tcg_gen_qemu_ld16s(REG(B11_8), addr, ctx->memidx);
 	    tcg_temp_free(addr);
@@ -640,6 +641,7 @@ static void _decode_opc(DisasContext * ctx)
 	return;
     case 0xd000:		/* mov.l @(disp,PC),Rn */
 	{
+	    CHECK_NOT_DELAY_SLOT
 	    TCGv addr = tcg_const_i32((ctx->pc + 4 + B7_0 * 4) & ~3);
 	    tcg_gen_qemu_ld32s(REG(B11_8), addr, ctx->memidx);
 	    tcg_temp_free(addr);
@@ -1389,6 +1391,7 @@ static void _decode_opc(DisasContext * ctx)
 	}
 	return;
     case 0xc700:		/* mova @(disp,PC),R0 */
+	CHECK_NOT_DELAY_SLOT
 	tcg_gen_movi_i32(REG(0), ((ctx->pc & 0xfffffffc) + 4 + B7_0 * 4) & ~3);
 	return;
     case 0xcb00:		/* or #imm,R0 */
