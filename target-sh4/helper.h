@@ -51,4 +51,9 @@ DEF_HELPER_1(ftrc_DT, i32, f64)
 DEF_HELPER_2(fipr, void, i32, i32)
 DEF_HELPER_1(ftrv, void, i32)
 
+#if defined(CONFIG_USER_ONLY)
+DEF_HELPER_0(enter_gUSA_section, void)
+DEF_HELPER_0(exit_gUSA_section, void)
+#endif
+
 #include "def-helper.h"

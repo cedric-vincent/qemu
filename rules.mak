@@ -69,5 +69,9 @@ find-in-path = $(if $(find-string /, $1), \
 	$(call quiet-command, sh $(SRC_PATH)/scripts/create_config < $< > $@, "  GEN   $*.h")
 	@cmp $@ $*.h >/dev/null 2>&1 || cp $@ $*.h
 
+syscall_fwd_compat.h-timestamp: %.h-timestamp: config-host.mak $(SRC_PATH)/scripts/create_compat
+	$(call quiet-command, sh $(SRC_PATH)/scripts/create_compat $(ARCH) > $@, "  GEN   $*.h")
+	@cmp $@ $*.h >/dev/null 2>&1 || cp $@ $*.h
+
 # will delete the target of a rule if commands exit with a nonzero exit status
 .DELETE_ON_ERROR:

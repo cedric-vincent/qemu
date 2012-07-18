@@ -109,6 +109,7 @@ target_list=""
 # is impossible without a --enable-foo that exits if a feature is not found.
 
 bluez=""
+glib_compat=""
 brlapi=""
 curl=""
 curses=""
@@ -187,6 +188,7 @@ opengl=""
 zlib="yes"
 guest_agent="yes"
 libiscsi=""
+syscall_fwd_compat="no"
 
 # parse CC options first
 for opt do
@@ -797,6 +799,10 @@ for opt do
   ;;
   --disable-guest-agent) guest_agent="no"
   ;;
+  --enable-syscall-fwd-compat) syscall_fwd_compat="yes"
+  ;;
+  --disable-syscall-fwd-compat) syscall_fwd_compat="no"
+  ;;
   *) echo "ERROR: unknown option $opt"; show_help="yes"
   ;;
   esac
@@ -1085,6 +1091,8 @@ echo "  --disable-usb-redir      disable usb network redirection support"
 echo "  --enable-usb-redir       enable usb network redirection support"
 echo "  --disable-guest-agent    disable building of the QEMU Guest Agent"
 echo "  --enable-guest-agent     enable building of the QEMU Guest Agent"
+echo "  --enable-syscall-fwd-compat     enable syscall forward compatibility in linux-user mode"
+echo "  --disable-syscall-fwd-compat    disable syscall forward compatibility in linux-user mode (default)"
 echo ""
 echo "NOTE: The object files are built at the place where configure is launched"
 exit 1
@@ -1945,6 +1953,22 @@ if $pkg_config --modversion gthread-2.0 > /dev/null 2>&1 ; then
 else
     echo "glib-2.0 required to compile QEMU"
     exit 1
+fi
+
+# check availability of some glib functions
+if test -z "$glib_compat"; then
+    cat > $TMPC << EOF
+#include <glib.h>
+int main(void) { 
+  gpointer p = g_try_malloc0(8);
+  return 0;
+}
+EOF
+    if compile_prog "$glib_cflags" "$glib_libs"; then
+	glib_compat=no
+    else
+	glib_compat=yes
+    fi
 fi
 
 ##########################################
@@ -2858,6 +2882,7 @@ echo "usb net redir     $usb_redir"
 echo "OpenGL support    $opengl"
 echo "libiscsi support  $libiscsi"
 echo "build guest agent $guest_agent"
+echo "syscall fwd compat $syscall_fwd_compat"
 
 if test "$sdl_too_old" = "yes"; then
 echo "-> Your SDL version is too old - please upgrade to have SDL support"
@@ -3107,6 +3132,9 @@ if test "$bluez" = "yes" ; then
   echo "BLUEZ_CFLAGS=$bluez_cflags" >> $config_host_mak
 fi
 echo "GLIB_CFLAGS=$glib_cflags" >> $config_host_mak
+if test "$glib_compat" = "yes" ; then
+  echo "CONFIG_GLIB_COMPAT=y" >> $config_host_mak
+fi
 if test "$xen" = "yes" ; then
   echo "CONFIG_XEN_BACKEND=y" >> $config_host_mak
   echo "CONFIG_XEN_CTRL_INTERFACE_VERSION=$xen_ctrl_version" >> $config_host_mak
@@ -3282,6 +3310,9 @@ echo "LIBS+=$LIBS" >> $config_host_mak
 echo "LIBS_TOOLS+=$libs_tools" >> $config_host_mak
 echo "EXESUF=$EXESUF" >> $config_host_mak
 echo "LIBS_QGA+=$libs_qga" >> $config_host_mak
+if test "$syscall_fwd_compat" = "yes" ; then
+  echo "CONFIG_SYSCALL_FWD_COMPAT=y" >> $config_host_mak
+fi
 
 # generate list of library paths for linker script
 
@@ -3301,6 +3332,7 @@ for d in libdis libdis-user; do
     echo > $d/config.mak
 done
 
+host_user_only="yes"
 for target in $target_list; do
 target_dir="$target"
 config_target_mak=$target_dir/config-target.mak
@@ -3320,6 +3352,7 @@ target_bsd_user="no"
 case "$target" in
   ${target_arch2}-softmmu)
     target_softmmu="yes"
+    host_user_only="no"
     ;;
   ${target_arch2}-linux-user)
     if test "$linux" != "yes" ; then
@@ -3779,6 +3812,10 @@ echo "QEMU_CFLAGS+=$cflags" >> $config_target_mak
 echo "QEMU_INCLUDES+=$includes" >> $config_target_mak
 
 done # for target in $targets
+
+if test "$host_user_only" = "yes" ; then
+  echo "CONFIG_HOST_USER_ONLY=y" >> $config_host_mak
+fi
 
 # build tree in object directory in case the source is not in the current directory
 DIRS="tests tests/cris slirp audio block net pc-bios/optionrom"

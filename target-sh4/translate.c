@@ -30,6 +30,7 @@
 #include "disas.h"
 #include "tcg-op.h"
 #include "qemu-common.h"
+#include "qemu-thread.h"
 
 #include "helper.h"
 #define GEN_HELPER 1
@@ -48,6 +49,10 @@ typedef struct DisasContext {
     int singlestep_enabled;
     uint32_t features;
     int has_movcal;
+
+#if defined(CONFIG_USER_ONLY)
+    uint32_t gUSA_end;
+#endif
 } DisasContext;
 
 #if defined(CONFIG_USER_ONLY)
@@ -77,6 +82,11 @@ static TCGv cpu_fregs[32];
 static TCGv cpu_flags, cpu_delayed_pc;
 
 static uint32_t gen_opc_hflags[OPC_BUF_SIZE];
+
+#if defined(CONFIG_USER_ONLY)
+static QemuMutex gUSA_mutex;
+static TCGv gUSA_end;
+#endif
 
 #include "gen-icount.h"
 
@@ -151,6 +161,11 @@ static void sh4_translate_init(void)
         cpu_fregs[i] = tcg_global_mem_new_i32(TCG_AREG0,
                                               offsetof(CPUState, fregs[i]),
                                               fregnames[i]);
+#if defined(CONFIG_USER_ONLY)
+    gUSA_end = tcg_global_mem_new_i32(TCG_AREG0,
+				      offsetof(CPUState, gUSA_end), "gUSA_end");
+    qemu_mutex_init(&gUSA_mutex);
+#endif
 
     /* register helpers */
 #define GEN_HELPER 2
@@ -196,6 +211,7 @@ void cpu_reset(CPUSH4State * env)
 
     env->pc = 0xA0000000;
 #if defined(CONFIG_USER_ONLY)
+    env->gUSA_end = 0;
     env->fpscr = FPSCR_PR; /* value for userspace according to the kernel */
     set_float_rounding_mode(float_round_nearest_even, &env->fp_status); /* ?! */
 #else
@@ -576,6 +592,10 @@ static void _decode_opc(DisasContext * ctx)
 	tcg_gen_xori_i32(cpu_fpscr, cpu_fpscr, FPSCR_SZ);
 	ctx->bstate = BS_STOP;
 	return;
+    case 0xf7fd:		/* fpchg */
+	tcg_gen_xori_i32(cpu_fpscr, cpu_fpscr, FPSCR_PR);
+	ctx->bstate = BS_STOP;
+	return;
     case 0x0009:		/* nop */
 	return;
     case 0x001b:		/* sleep */
@@ -602,10 +622,18 @@ static void _decode_opc(DisasContext * ctx)
 	}
 	return;
     case 0xe000:		/* mov #imm,Rn */
+#if defined(CONFIG_USER_ONLY)
+        if (B11_8 == 15 && B7_0s < 0) {
+            ctx->gUSA_end = ctx->pc - B7_0s + 2;
+            gen_helper_enter_gUSA_section();
+            tcg_gen_movi_i32(gUSA_end, ctx->gUSA_end);
+	}
+#endif
 	tcg_gen_movi_i32(REG(B11_8), B7_0s);
 	return;
     case 0x9000:		/* mov.w @(disp,PC),Rn */
 	{
+	    CHECK_NOT_DELAY_SLOT
 	    TCGv addr = tcg_const_i32(ctx->pc + 4 + B7_0 * 2);
 	    tcg_gen_qemu_ld16s(REG(B11_8), addr, ctx->memidx);
 	    tcg_temp_free(addr);
@@ -613,6 +641,7 @@ static void _decode_opc(DisasContext * ctx)
 	return;
     case 0xd000:		/* mov.l @(disp,PC),Rn */
 	{
+	    CHECK_NOT_DELAY_SLOT
 	    TCGv addr = tcg_const_i32((ctx->pc + 4 + B7_0 * 4) & ~3);
 	    tcg_gen_qemu_ld32s(REG(B11_8), addr, ctx->memidx);
 	    tcg_temp_free(addr);
@@ -1362,6 +1391,7 @@ static void _decode_opc(DisasContext * ctx)
 	}
 	return;
     case 0xc700:		/* mova @(disp,PC),R0 */
+	CHECK_NOT_DELAY_SLOT
 	tcg_gen_movi_i32(REG(0), ((ctx->pc & 0xfffffffc) + 4 + B7_0 * 4) & ~3);
 	return;
     case 0xcb00:		/* or #imm,R0 */
@@ -1593,6 +1623,9 @@ static void _decode_opc(DisasContext * ctx)
 	}
 	return;
     case 0x00c3:		/* movca.l R0,@Rm */
+#if defined(CONFIG_USER_ONLY)
+        tcg_gen_qemu_st32(REG(0), REG(B11_8), ctx->memidx);
+#else
         {
             TCGv val = tcg_temp_new();
             tcg_gen_qemu_ld32u(val, REG(B11_8), ctx->memidx);
@@ -1600,6 +1633,7 @@ static void _decode_opc(DisasContext * ctx)
             tcg_gen_qemu_st32(REG(0), REG(B11_8), ctx->memidx);
         }
         ctx->has_movcal = 1;
+#endif
 	return;
     case 0x40a9:
 	/* MOVUA.L @Rm,R0 (Rm) -> R0
@@ -1951,6 +1985,10 @@ gen_intermediate_code_internal(CPUState * env, TranslationBlock * tb,
     ctx.features = env->features;
     ctx.has_movcal = (tb->flags & TB_FLAG_PENDING_MOVCA);
 
+#if defined(CONFIG_USER_ONLY)
+    ctx.gUSA_end = env->gUSA_end;
+#endif
+
     ii = -1;
     num_insns = 0;
     max_insns = tb->cflags & CF_COUNT_MASK;
@@ -1991,6 +2029,14 @@ gen_intermediate_code_internal(CPUState * env, TranslationBlock * tb,
 #endif
 	ctx.opcode = lduw_code(ctx.pc);
 	decode_opc(&ctx);
+
+#if defined(CONFIG_USER_ONLY)
+        if (ctx.gUSA_end == ctx.pc) {
+            tcg_gen_movi_i32(gUSA_end, 0);
+            gen_helper_exit_gUSA_section();
+        }
+#endif
+
         num_insns++;
 	ctx.pc += 2;
 	if ((ctx.pc & (TARGET_PAGE_SIZE - 1)) == 0)
@@ -2067,3 +2113,15 @@ void restore_state_to_opc(CPUState *env, TranslationBlock *tb, int pc_pos)
     env->pc = gen_opc_pc[pc_pos];
     env->flags = gen_opc_hflags[pc_pos];
 }
+
+#if defined(CONFIG_USER_ONLY)
+void helper_enter_gUSA_section(void)
+{
+    qemu_mutex_lock(&gUSA_mutex);
+}
+
+void helper_exit_gUSA_section(void)
+{
+    qemu_mutex_unlock(&gUSA_mutex);
+}
+#endif

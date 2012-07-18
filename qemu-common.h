@@ -38,6 +38,15 @@ typedef struct Monitor Monitor;
 #include <signal.h>
 #include <glib.h>
 
+#ifdef CONFIG_GLIB_COMPAT
+#define g_try_malloc0(n_bytes) ({ \
+    gsize n = (n_bytes); \
+    gpointer ptr; \
+    ptr = g_try_malloc(n); \
+    ptr == NULL ? ptr : memset(ptr, 0, n_bytes); \
+})
+#endif
+
 #ifdef _WIN32
 #include "qemu-os-win32.h"
 #endif
@@ -63,6 +72,14 @@ typedef struct Monitor Monitor;
 #endif
 #ifndef TIME_MAX
 #define TIME_MAX LONG_MAX
+#endif
+
+#ifndef RLIMIT_NICE
+#define RLIMIT_NICE 13
+#endif
+
+#ifndef RLIMIT_RTPRIO
+#define RLIMIT_RTPRIO 14
 #endif
 
 #ifndef CONFIG_IOVEC
