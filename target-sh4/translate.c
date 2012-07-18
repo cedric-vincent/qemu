@@ -1620,6 +1620,9 @@ static void _decode_opc(DisasContext * ctx)
 	}
 	return;
     case 0x00c3:		/* movca.l R0,@Rm */
+#if defined(CONFIG_USER_ONLY)
+        tcg_gen_qemu_st32(REG(0), REG(B11_8), ctx->memidx);
+#else
         {
             TCGv val = tcg_temp_new();
             tcg_gen_qemu_ld32u(val, REG(B11_8), ctx->memidx);
@@ -1627,6 +1630,7 @@ static void _decode_opc(DisasContext * ctx)
             tcg_gen_qemu_st32(REG(0), REG(B11_8), ctx->memidx);
         }
         ctx->has_movcal = 1;
+#endif
 	return;
     case 0x40a9:
 	/* MOVUA.L @Rm,R0 (Rm) -> R0
