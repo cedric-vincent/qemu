@@ -3332,7 +3332,6 @@ for d in libdis libdis-user; do
     echo > $d/config.mak
 done
 
-host_user_only="yes"
 for target in $target_list; do
 target_dir="$target"
 config_target_mak=$target_dir/config-target.mak
@@ -3352,7 +3351,6 @@ target_bsd_user="no"
 case "$target" in
   ${target_arch2}-softmmu)
     target_softmmu="yes"
-    host_user_only="no"
     ;;
   ${target_arch2}-linux-user)
     if test "$linux" != "yes" ; then
@@ -3812,10 +3810,6 @@ echo "QEMU_CFLAGS+=$cflags" >> $config_target_mak
 echo "QEMU_INCLUDES+=$includes" >> $config_target_mak
 
 done # for target in $targets
-
-if test "$host_user_only" = "yes" ; then
-  echo "CONFIG_HOST_USER_ONLY=y" >> $config_host_mak
-fi
 
 # build tree in object directory in case the source is not in the current directory
 DIRS="tests tests/cris slirp audio block net pc-bios/optionrom"
