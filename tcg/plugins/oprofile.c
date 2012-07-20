@@ -117,6 +117,18 @@ static void tb_helper_func(const TCGPluginInterface *tpi, TPIHelperInfo info,
     }
 }
 
+static guint
+int64_hash (gconstpointer v)
+{
+  return (guint) *(const gint64*) v;
+}
+
+static gboolean
+int64_equal(gconstpointer v1,
+	    gconstpointer v2)
+{
+  return *((const gint64*) v1) == *((const gint64*) v2);
+}
 
 static void tb_helper_data(const TCGPluginInterface *tpi, TPIHelperInfo info,
 			   uint64_t address, uint64_t *data1, uint64_t *data2)
@@ -153,9 +165,9 @@ static void tb_helper_data(const TCGPluginInterface *tpi, TPIHelperInfo info,
       sym_hash_entry->count = 0;
       sym_hash_entry->symbol = symbol_cp;
       sym_hash_entry->filename = filename_cp;
-      /* no need to write g_uint64_hash and g_uint64_equal ? */
+      /* Use local version of int64_hash/int64_equal for compatibility with glib < 2.22.  */
       sym_hash_entry->pc_hash =
-	g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
+	g_hash_table_new_full(int64_hash, int64_equal, g_free, g_free);
       g_hash_table_insert(sym_hash, symbol_cp, sym_hash_entry);
     }
   *data1 = (uintptr_t)sym_hash_entry;
