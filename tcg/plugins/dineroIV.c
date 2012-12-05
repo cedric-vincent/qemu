@@ -39,9 +39,16 @@ static void after_exec_opc(uint64_t info_, uint64_t address, uint64_t value, uin
 {
     TPIHelperInfo info = *(TPIHelperInfo *)&info_;
 
+    if (info.type == 'i') {
+        address = pc;
+        value = 0;
+    }
+
     fprintf(output, "%c 0x%016" PRIx64 " 0x%08" PRIx32 " (0x%016" PRIx64 ") CPU #%" PRIu32 " 0x%016" PRIx64 "\n",
             info.type, address, info.size, value, info.cpu_index, pc);
 }
+
+static void gen_helper(const TCGPluginInterface *tpi, TCGArg *opargs, uint64_t pc, TPIHelperInfo info);
 
 static void after_gen_opc(const TCGPluginInterface *tpi, const TPIOpCode *tpi_opcode)
 {
@@ -95,17 +102,21 @@ static void after_gen_opc(const TCGPluginInterface *tpi, const TPIOpCode *tpi_op
     default:
         return;
     }
-#undef MEMACCESS
 
+    gen_helper(tpi, tpi_opcode->opargs, tpi_opcode->pc, info);
+}
+
+static void gen_helper(const TCGPluginInterface *tpi, TCGArg *opargs, uint64_t pc, TPIHelperInfo info)
+{
     int sizemask = 0;
     TCGArg args[4];
 
     TCGv_i64 tcgv_info = tcg_const_i64(*(uint64_t *)&info);
-    TCGv_i64 tcgv_pc   = tcg_const_i64(tpi_opcode->pc);
+    TCGv_i64 tcgv_pc   = tcg_const_i64(pc);
 
     args[0] = GET_TCGV_I64(tcgv_info);
-    args[1] = tpi_opcode->opargs[1];
-    args[2] = tpi_opcode->opargs[0];
+    args[1] = opargs ? opargs[1] : 0;
+    args[2] = opargs ? opargs[0] : 0;
     args[3] = GET_TCGV_I64(tcgv_pc);
 
     dh_sizemask(void, 0);
@@ -120,9 +131,29 @@ static void after_gen_opc(const TCGPluginInterface *tpi, const TPIOpCode *tpi_op
     tcg_temp_free_i64(tcgv_info);
 }
 
+static void decode_instr(const TCGPluginInterface *tpi, uint64_t pc)
+{
+    TPIHelperInfo info;
+
+#if defined(TARGET_SH4)
+    MEMACCESS('i', 2);
+#elif defined(TARGET_ARM)
+    MEMACCESS('i', ARM_TBFLAG_THUMB(tpi->tb->flags) ? 2 : 4);
+#else
+    MEMACCESS('i', 0);
+#endif
+
+    gen_helper(tpi, NULL, pc, info);
+}
+
 void tpi_init(TCGPluginInterface *tpi)
 {
     TPI_INIT_VERSION(*tpi);
     tpi->after_gen_opc = after_gen_opc;
+    tpi->decode_instr  = decode_instr;
     output = tpi->output;
+
+#if !defined(TARGET_SH4) && !defined(TARGET_ARM)
+    fprintf(output, "# WARNING: instruction cache simulation NYI");
+#endif
 }
