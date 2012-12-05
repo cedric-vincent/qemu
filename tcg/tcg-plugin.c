@@ -125,7 +125,12 @@ void tcg_plugin_load(const char *name)
     tpi.output = NULL;
     if (getenv("TPI_OUTPUT")) {
         char path[PATH_MAX];
-        snprintf(path, PATH_MAX, "%s.%d", getenv("TPI_OUTPUT"), getpid());
+        if (getenv("TPI_OUTPUT_NO_PID")) {
+            snprintf(path, PATH_MAX, "%s", getenv("TPI_OUTPUT"));
+        }
+        else {
+            snprintf(path, PATH_MAX, "%s.%d", getenv("TPI_OUTPUT"), getpid());
+        }
         tpi.output = fopen(path, "w");
         if (!tpi.output) {
             perror("plugin: warning: can't open TPI_OUTPUT.$PID (fall back to stderr)");
@@ -401,6 +406,9 @@ void tcg_plugin_register_info(uint64_t pc, CPUState *env, TranslationBlock *tb)
     if (!tpi.is_generic) {
         tpi.env = env;
         tpi.tb  = tb;
+    }
+    if (tpi.decode_instr) {
+        TPI_CALLBACK_NOT_GENERIC(decode_instr, pc);
     }
 }
 

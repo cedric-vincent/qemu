@@ -104,6 +104,8 @@ typedef void (* tpi_after_gen_tb_t)(const TCGPluginInterface *tpi);
 
 typedef void (* tpi_after_gen_opc_t)(const TCGPluginInterface *tpi, const TPIOpCode *opcode);
 
+typedef void (* tpi_decode_instr_t)(const TCGPluginInterface *tpi, uint64_t pc);
+
 typedef void (* tpi_pre_tb_helper_code_t)(const TCGPluginInterface *tpi,
                                           TPIHelperInfo info, uint64_t address,
                                           uint64_t data1, uint64_t data2);
@@ -141,6 +143,7 @@ struct TCGPluginInterface
     tpi_pre_tb_helper_code_t pre_tb_helper_code;
     tpi_pre_tb_helper_data_t pre_tb_helper_data;
     tpi_after_gen_opc_t after_gen_opc;
+    tpi_decode_instr_t decode_instr;
 };
 
 #define TPI_INIT_VERSION(tpi) do {                                     \
