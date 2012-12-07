@@ -1,6 +1,5 @@
 /*
- * TCG plugin for QEMU: provide memory references for Dinero IV (a
- *                      cache simulator)
+ * TCG plugin for QEMU: wrapper for Dinero IV (a cache simulator)
  *
  * Copyright (C) 2011 STMicroelectronics
  *
@@ -33,19 +32,50 @@
 #include "def-helper.h"
 #include "tcg-plugin.h"
 
+#define D4ADDR uint64_t
+#include "d4-7/d4.h"
+#include "d4-7/cmdd4.h"
+#include "d4-7/cmdargs.h"
+
 static FILE *output;
+
+static d4cache *instr_cache, *data_cache;
 
 static void after_exec_opc(uint64_t info_, uint64_t address, uint64_t value, uint64_t pc)
 {
     TPIHelperInfo info = *(TPIHelperInfo *)&info_;
+    d4memref memref;
 
-    if (info.type == 'i') {
+    switch (info.type) {
+    case 'i':
         address = pc;
         value = 0;
+
+	memref.address    = pc;
+	memref.accesstype = D4XINSTRN;
+	memref.size       = (unsigned short) info.size;
+        d4ref(instr_cache, memref);
+        break;
+
+    case 'r':
+	memref.address    = address;
+	memref.accesstype = D4XREAD;
+	memref.size       = (unsigned short) info.size;
+        d4ref(data_cache, memref);
+        break;
+
+    case 'w':
+	memref.address    = address;
+	memref.accesstype = D4XWRITE;
+	memref.size       = (unsigned short) info.size;
+        d4ref(data_cache, memref);
+        break;
     }
 
+#if 0
     fprintf(output, "%c 0x%016" PRIx64 " 0x%08" PRIx32 " (0x%016" PRIx64 ") CPU #%" PRIu32 " 0x%016" PRIx64 "\n",
             info.type, address, info.size, value, info.cpu_index, pc);
+#endif
 }
 
 static void gen_helper(const TCGPluginInterface *tpi, TCGArg *opargs, uint64_t pc, TPIHelperInfo info);
@@ -146,14 +176,76 @@ static void decode_instr(const TCGPluginInterface *tpi, uint64_t pc)
     gen_helper(tpi, NULL, pc, info);
 }
 
+extern void dostats (void);
+extern void doargs (int, char **);
+
+static void cpus_stopped(const TCGPluginInterface *tpi)
+{
+    d4memref memref;
+    FILE *saved_stdout = stdout;
+
+    /* Flush the data cache.  */
+    memref.accesstype = D4XCOPYB;
+    memref.address = 0;
+    memref.size = 0;
+    d4ref(data_cache, memref);
+
+    stdout = output;
+    dostats();
+    stdout = saved_stdout;
+
+    fprintf(output, "---Execution complete.\n");
+}
+
 void tpi_init(TCGPluginInterface *tpi)
 {
+    int i, argc;
+    char **argv;
+    char *cmdline;
+
     TPI_INIT_VERSION(*tpi);
+    output = tpi->output;
+
     tpi->after_gen_opc = after_gen_opc;
     tpi->decode_instr  = decode_instr;
-    output = tpi->output;
+    tpi->cpus_stopped  = cpus_stopped;
 
 #if !defined(TARGET_SH4) && !defined(TARGET_ARM)
     fprintf(output, "# WARNING: instruction cache simulation NYI");
 #endif
+
+    cmdline = getenv("DINEROIV_CMDLINE");
+    if (cmdline == NULL) {
+        cmdline = g_strdup("-l1-isize 16k -l1-dsize 8192 -l1-ibsize 32 -l1-dbsize 16");
+        fprintf(output, "# WARNING: using default Dineroiv command-line: %s\n", cmdline);
+        fprintf(output, "# INFO: use the DINEROIV_CMDLINE environment variable to specify a command-line\n");
+    }
+
+    /* Create a valid argv[] for Dineroiv.  */
+    argv = g_malloc0(2 * sizeof(char *));
+    argv[0] = "tcg-plugin-dineroIV";
+    argv[1] = cmdline;
+    argc = 2;
+
+    for (i = 0; cmdline[i] != '\0'; i++) {
+        if (cmdline[i] == ' ') {
+            cmdline[i] = '\0';
+            argv = g_realloc(argv, (argc + 1) * sizeof(char *));
+            argv[argc++] = cmdline + i + 1;
+        }
+    }
+
+    doargs(argc, argv);
+    verify_options();
+    initialize_caches(&instr_cache, &data_cache);
+
+    if (data_cache == NULL)
+        data_cache = instr_cache;
+
+    fprintf(output, "---Dinero IV cache simulator, version %s\n", D4VERSION);
+    fprintf(output, "---Written by Jan Edler and Mark D. Hill\n");
+    fprintf(output, "---Copyright (C) 1997 NEC Research Institute, Inc. and Mark D. Hill.\n");
+    fprintf(output, "---All rights reserved.\n");
+    fprintf(output, "---Copyright (C) 1985, 1989 Mark D. Hill.  All rights reserved.\n");
+    fprintf(output, "---See -copyright option for details\n");
 }

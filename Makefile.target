@@ -426,6 +426,17 @@ tcg-plugin-%.so: LDFLAGS += -shared
 tcg-plugin-%.so: tcg-plugin-%.o
 	$(call LINK,$^)
 
+d4-7/Makefile: $(SRC_PATH)/tcg/plugins/d4-7
+	mkdir -p d4-7
+	cd d4-7 && env CFLAGS="-DD4ADDR=uint64_t -include stdint.h -fPIC -I$${PWD}" $^/configure
+
+D4_OBJS=d4-7/ref.o d4-7/misc.o d4-7/cmdmain.o d4-7/cmdargs.o d4-7/tracein.o d4-7/xdinfmt.o d4-7/dinfmt.o d4-7/binaryfmt.o d4-7/pixie32fmt.o d4-7/pixie64fmt.o
+d4-7/%.o: d4-7/Makefile
+	cd d4-7 && env MAKEFLAGS= $(MAKE) $*.o
+
+tcg-plugin-dineroIV.so: tcg-plugin-dineroIV.o $(D4_OBJS)
+	$(call LINK,$^)
+
 endif # CONFIG_TCG_PLUGIN
 
 ifndef CONFIG_LINUX_USER
