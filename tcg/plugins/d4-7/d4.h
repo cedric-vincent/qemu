@@ -222,7 +222,7 @@ typedef struct d4_cache_struct {
 	 * to the processors.
 	 */
 	struct d4_cache_struct *downstream;
-	void (*ref)(struct d4_cache_struct *, d4memref);	/* d4ref or custom version */
+	int (*ref)(struct d4_cache_struct *, d4memref);	/* d4ref or custom version */
 
 	/*
 	 * Cache policy functions and data:
@@ -401,7 +401,7 @@ extern int	d4setup (void);
 #if D4CUSTOM && !defined(d4ref)
 #define		d4ref(c,m) (*(c)->ref)(c,m) /* call customized version */
 #else
-void		d4ref (d4cache *, d4memref); /* call generic version */
+int		d4ref (d4cache *, d4memref); /* call generic version */
 #endif
 void		d4copyback (d4cache *, const d4memref *, int);
 void		d4invalidate (d4cache *, const d4memref *, int);
@@ -471,7 +471,7 @@ extern void d4hash (d4cache *, int stacknum, d4stacknode *);
  */
 extern int d4_infcache (d4cache *, d4memref);
 extern d4memref d4_splitm (d4cache *, d4memref, d4addr);
-extern void d4_dopending (d4cache *, d4pendstack *);
+extern int d4_dopending (d4cache *, d4pendstack *);
 extern void d4_unhash (d4cache *c, int stacknum, d4stacknode *);
 extern d4stacknode *d4_find (d4cache *, int stacknum, d4addr blockaddr);
 extern void d4_wbblock (d4cache *, d4stacknode *, const int);

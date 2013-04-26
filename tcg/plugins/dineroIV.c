@@ -38,13 +38,38 @@
 #include "d4-7/cmdargs.h"
 
 static FILE *output;
-
 static d4cache *instr_cache, *data_cache;
+
+static inline size_t type2index(char type) {
+    switch (type) {
+    case 'i': return 0;
+    case 'r': return 1;
+    case 'w': return 2;
+    }
+    assert(0);
+}
+
+static inline const char *index2type(size_t index) {
+    switch (index) {
+    case 0: return "instruction fetch";
+    case 1: return "data read";
+    case 2: return "data write";
+    }
+    assert(0);
+}
+
+static struct {
+    uint64_t *counts;
+    size_t size;
+} cost_summary[3];
 
 static void after_exec_opc(uint64_t info_, uint64_t address, uint64_t value, uint64_t pc)
 {
     TPIHelperInfo info = *(TPIHelperInfo *)&info_;
     d4memref memref;
+    int cost = -1;
+    size_t index;
+    int i;
 
     switch (info.type) {
     case 'i':
@@ -54,23 +79,45 @@ static void after_exec_opc(uint64_t info_, uint64_t address, uint64_t value, uin
 	memref.address    = pc;
 	memref.accesstype = D4XINSTRN;
 	memref.size       = (unsigned short) info.size;
-        d4ref(instr_cache, memref);
+        cost = d4ref(instr_cache, memref);
         break;
 
     case 'r':
 	memref.address    = address;
 	memref.accesstype = D4XREAD;
 	memref.size       = (unsigned short) info.size;
-        d4ref(data_cache, memref);
+        cost = d4ref(data_cache, memref);
         break;
 
     case 'w':
 	memref.address    = address;
 	memref.accesstype = D4XWRITE;
 	memref.size       = (unsigned short) info.size;
-        d4ref(data_cache, memref);
+        cost = d4ref(data_cache, memref);
         break;
+
+    default:
+        assert(0);
     }
+    assert(cost >= 0);
+
+    /* Allocate cost slots on demand.  */
+    index = type2index(info.type);
+    if (cost >= cost_summary[index].size) {
+        size_t old_size = cost_summary[index].size;
+        size_t new_size = cost + 1;
+
+        cost_summary[index].counts = g_realloc(cost_summary[index].counts,
+                                               new_size * sizeof(uint64_t));
+
+        /* Initialize new slots.  */
+        for (i = old_size; i < new_size; i++)
+            cost_summary[index].counts[i] = 0;
+
+        cost_summary[index].size = new_size;
+    }
+
+    cost_summary[index].counts[cost]++;
 
 #if 0
     fprintf(output, "%c 0x%016" PRIx64 " 0x%08" PRIx32 " (0x%016" PRIx64 ") CPU #%" PRIu32 " 0x%016" PRIx64 "\n",
@@ -181,8 +228,9 @@ extern void doargs (int, char **);
 
 static void cpus_stopped(const TCGPluginInterface *tpi)
 {
-    d4memref memref;
     FILE *saved_stdout = stdout;
+    d4memref memref;
+    int i, j;
 
     /* Flush the data cache.  */
     memref.accesstype = D4XCOPYB;
@@ -195,6 +243,17 @@ static void cpus_stopped(const TCGPluginInterface *tpi)
     stdout = saved_stdout;
 
     fprintf(output, "---Execution complete.\n");
+
+    fprintf(output, "\nSummary:\n");
+    for (i = 0; i < 3; i++) {
+        for (j = 0; j < cost_summary[i].size; j++) {
+            fprintf(output, "\t%s: %"PRIu64" access in ", index2type(i), cost_summary[i].counts[j]);
+            if (j != cost_summary[i].size - 1)
+                fprintf(output, "cache level %d\n", j + 1);
+            else
+                fprintf(output, "RAM\n");
+        }
+    }
 }
 
 void tpi_init(TCGPluginInterface *tpi)
@@ -217,13 +276,13 @@ void tpi_init(TCGPluginInterface *tpi)
     cmdline = getenv("DINEROIV_CMDLINE");
     if (cmdline == NULL) {
         cmdline = g_strdup("-l1-isize 16k -l1-dsize 8192 -l1-ibsize 32 -l1-dbsize 16");
-        fprintf(output, "# WARNING: using default Dineroiv command-line: %s\n", cmdline);
+        fprintf(output, "# WARNING: using default DineroIV command-line: %s\n", cmdline);
         fprintf(output, "# INFO: use the DINEROIV_CMDLINE environment variable to specify a command-line\n");
     }
 
     /* Create a valid argv[] for Dineroiv.  */
     argv = g_malloc0(2 * sizeof(char *));
-    argv[0] = "tcg-plugin-dineroIV";
+    argv[0] = g_strdup("tcg-plugin-dineroIV");
     argv[1] = cmdline;
     argc = 2;
 
