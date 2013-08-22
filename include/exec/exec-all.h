@@ -43,8 +43,19 @@ typedef ram_addr_t tb_page_addr_t;
 struct TranslationBlock;
 typedef struct TranslationBlock TranslationBlock;
 
+#ifdef CONFIG_TCG_PLUGIN
+/* Assume that plugins may generate up to these additional
+ * ops for each initial op.
+ * This leaves enought room for 1 call with args setup.
+ */
+#define MAX_PLUGIN_OPS_PER_OP  (1 + (MAX_OPC_PARAM_PER_ARG * MAX_OPC_PARAM_ARGS))
+#else
+#define MAX_PLUGIN_OPS_PER_OP 0
+#endif
+
 /* XXX: make safe guess about sizes */
-#define MAX_OP_PER_INSTR 208
+#define MAX_OP_PER_INSTR (208 * (MAX_PLUGIN_OPS_PER_OP + 1))
+
 
 #if HOST_LONG_BITS == 32
 #define MAX_OPC_PARAM_PER_ARG 2
@@ -59,7 +70,7 @@ typedef struct TranslationBlock TranslationBlock;
  * and up to 4 + N parameters on 64-bit archs
  * (N = number of input arguments + output arguments).  */
 #define MAX_OPC_PARAM (4 + (MAX_OPC_PARAM_PER_ARG * MAX_OPC_PARAM_ARGS))
-#define OPC_BUF_SIZE 640
+#define OPC_BUF_SIZE (640 * (MAX_PLUGIN_OPS_PER_OP + 1))
 #define OPC_MAX_SIZE (OPC_BUF_SIZE - MAX_OP_PER_INSTR)
 
 /* Maximum size a TCG op can expand to.  This is complicated because a
