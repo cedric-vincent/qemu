@@ -23,7 +23,7 @@
  */
 
 #include "keymaps.h"
-#include "sysemu.h"
+#include "sysemu/sysemu.h"
 
 static int get_keysym(const name2keysym_t *table,
 		      const char *name)
@@ -32,6 +32,12 @@ static int get_keysym(const name2keysym_t *table,
     for(p = table; p->name != NULL; p++) {
         if (!strcmp(p->name, name))
             return p->keysym;
+    }
+    if (name[0] == 'U' && strlen(name) == 5) { /* try unicode Uxxxx */
+        char *end;
+        int ret = (int)strtoul(name + 1, &end, 16);
+        if (*end == '\0' && ret > 0)
+          return ret;
     }
     return 0;
 }
@@ -127,25 +133,27 @@ static kbd_layout_t *parse_keyboard_layout(const name2keysym_t *table,
                     //		    fprintf(stderr, "Warning: unknown keysym %s\n", line);
 		} else {
 		    const char *rest = end_of_keysym + 1;
-		    char *rest2;
-		    int keycode = strtol(rest, &rest2, 0);
+                    int keycode = strtol(rest, NULL, 0);
 
-		    if (rest && strstr(rest, "numlock")) {
+                    if (strstr(rest, "numlock")) {
 			add_to_key_range(&k->keypad_range, keycode);
 			add_to_key_range(&k->numlock_range, keysym);
 			//fprintf(stderr, "keypad keysym %04x keycode %d\n", keysym, keycode);
 		    }
 
-		    if (rest && strstr(rest, "shift"))
+                    if (strstr(rest, "shift")) {
 			keycode |= SCANCODE_SHIFT;
-		    if (rest && strstr(rest, "altgr"))
+                    }
+                    if (strstr(rest, "altgr")) {
 			keycode |= SCANCODE_ALTGR;
-		    if (rest && strstr(rest, "ctrl"))
+                    }
+                    if (strstr(rest, "ctrl")) {
 			keycode |= SCANCODE_CTRL;
+                    }
 
 		    add_keysym(line, keysym, keycode, k);
 
-		    if (rest && strstr(rest, "addupper")) {
+                    if (strstr(rest, "addupper")) {
 			char *c;
 			for (c = line; *c; c++)
 			    *c = qemu_toupper(*c);

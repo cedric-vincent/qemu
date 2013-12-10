@@ -13,8 +13,8 @@
  */
 
 #include "fsdev/qemu-fsdev.h"
-#include "qemu-thread.h"
-#include "qemu-coroutine.h"
+#include "qemu/thread.h"
+#include "block/coroutine.h"
 #include "virtio-9p-coth.h"
 
 int v9fs_co_readdir_r(V9fsPDU *pdu, V9fsFidState *fidp, struct dirent *dent,
@@ -90,7 +90,7 @@ int v9fs_co_mkdir(V9fsPDU *pdu, V9fsFidState *fidp, V9fsString *name,
     V9fsState *s = pdu->s;
 
     if (v9fs_request_cancelled(pdu)) {
-        return -EINTR;;
+        return -EINTR;
     }
     cred_init(&cred);
     cred.fc_mode = mode;
@@ -124,7 +124,7 @@ int v9fs_co_opendir(V9fsPDU *pdu, V9fsFidState *fidp)
     V9fsState *s = pdu->s;
 
     if (v9fs_request_cancelled(pdu)) {
-        return -EINTR;;
+        return -EINTR;
     }
     v9fs_path_read_lock(s);
     v9fs_co_run_in_worker(
@@ -152,7 +152,7 @@ int v9fs_co_closedir(V9fsPDU *pdu, V9fsFidOpenState *fs)
     V9fsState *s = pdu->s;
 
     if (v9fs_request_cancelled(pdu)) {
-        return -EINTR;;
+        return -EINTR;
     }
     v9fs_co_run_in_worker(
         {

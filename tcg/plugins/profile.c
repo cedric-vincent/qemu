@@ -31,7 +31,7 @@
 #include <pthread.h>
 
 #include "tcg-plugin.h"
-#include "disas.h"
+#include "disas/disas.h"
 
 #include <glib.h>
 

@@ -1,26 +1,26 @@
 /*
  *  UniCore32 helper routines
  *
- * Copyright (C) 2010-2011 GUAN Xue-tao
+ * Copyright (C) 2010-2012 Guan Xuetao
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * published by the Free Software Foundation, or (at your option) any
+ * later version. See the COPYING file in the top-level directory.
  */
 #include "cpu.h"
-#include "dyngen-exec.h"
 #include "helper.h"
 
 #define SIGNBIT (uint32_t)0x80000000
 #define SIGNBIT64 ((uint64_t)1 << 63)
 
-void HELPER(exception)(uint32_t excp)
+void HELPER(exception)(CPUUniCore32State *env, uint32_t excp)
 {
     env->exception_index = excp;
     cpu_loop_exit(env);
 }
 
-static target_ulong asr_read(void)
+static target_ulong asr_read(CPUUniCore32State *env)
 {
     int ZF;
     ZF = (env->ZF == 0);
@@ -28,24 +28,18 @@ static target_ulong asr_read(void)
         (env->CF << 29) | ((env->VF & 0x80000000) >> 3);
 }
 
-target_ulong cpu_asr_read(CPUState *env1)
+target_ulong cpu_asr_read(CPUUniCore32State *env)
 {
-    CPUState *saved_env;
-    target_ulong ret;
-
-    saved_env = env;
-    env = env1;
-    ret = asr_read();
-    env = saved_env;
-    return ret;
+    return asr_read(env);
 }
 
-target_ulong HELPER(asr_read)(void)
+target_ulong HELPER(asr_read)(CPUUniCore32State *env)
 {
-    return asr_read();
+    return asr_read(env);
 }
 
-static void asr_write(target_ulong val, target_ulong mask)
+static void asr_write(CPUUniCore32State *env, target_ulong val,
+                      target_ulong mask)
 {
     if (mask & ASR_NZCV) {
         env->ZF = (~val) & ASR_Z;
@@ -61,23 +55,19 @@ static void asr_write(target_ulong val, target_ulong mask)
     env->uncached_asr = (env->uncached_asr & ~mask) | (val & mask);
 }
 
-void cpu_asr_write(CPUState *env1, target_ulong val, target_ulong mask)
+void cpu_asr_write(CPUUniCore32State *env, target_ulong val, target_ulong mask)
 {
-    CPUState *saved_env;
-
-    saved_env = env;
-    env = env1;
-    asr_write(val, mask);
-    env = saved_env;
+    asr_write(env, val, mask);
 }
 
-void HELPER(asr_write)(target_ulong val, target_ulong mask)
+void HELPER(asr_write)(CPUUniCore32State *env, target_ulong val,
+                       target_ulong mask)
 {
-    asr_write(val, mask);
+    asr_write(env, val, mask);
 }
 
 /* Access to user mode registers from privileged modes.  */
-uint32_t HELPER(get_user_reg)(uint32_t regno)
+uint32_t HELPER(get_user_reg)(CPUUniCore32State *env, uint32_t regno)
 {
     uint32_t val;
 
@@ -91,7 +81,7 @@ uint32_t HELPER(get_user_reg)(uint32_t regno)
     return val;
 }
 
-void HELPER(set_user_reg)(uint32_t regno, uint32_t val)
+void HELPER(set_user_reg)(CPUUniCore32State *env, uint32_t regno, uint32_t val)
 {
     if (regno == 29) {
         env->banked_r29[0] = val;
@@ -106,7 +96,7 @@ void HELPER(set_user_reg)(uint32_t regno, uint32_t val)
    The only way to do that in TCG is a conditional branch, which clobbers
    all our temporaries.  For now implement these as helper functions.  */
 
-uint32_t HELPER(add_cc)(uint32_t a, uint32_t b)
+uint32_t HELPER(add_cc)(CPUUniCore32State *env, uint32_t a, uint32_t b)
 {
     uint32_t result;
     result = a + b;
@@ -116,7 +106,7 @@ uint32_t HELPER(add_cc)(uint32_t a, uint32_t b)
     return result;
 }
 
-uint32_t HELPER(adc_cc)(uint32_t a, uint32_t b)
+uint32_t HELPER(adc_cc)(CPUUniCore32State *env, uint32_t a, uint32_t b)
 {
     uint32_t result;
     if (!env->CF) {
@@ -131,7 +121,7 @@ uint32_t HELPER(adc_cc)(uint32_t a, uint32_t b)
     return result;
 }
 
-uint32_t HELPER(sub_cc)(uint32_t a, uint32_t b)
+uint32_t HELPER(sub_cc)(CPUUniCore32State *env, uint32_t a, uint32_t b)
 {
     uint32_t result;
     result = a - b;
@@ -141,7 +131,7 @@ uint32_t HELPER(sub_cc)(uint32_t a, uint32_t b)
     return result;
 }
 
-uint32_t HELPER(sbc_cc)(uint32_t a, uint32_t b)
+uint32_t HELPER(sbc_cc)(CPUUniCore32State *env, uint32_t a, uint32_t b)
 {
     uint32_t result;
     if (!env->CF) {
@@ -185,7 +175,7 @@ uint32_t HELPER(sar)(uint32_t x, uint32_t i)
     return (int32_t)x >> shift;
 }
 
-uint32_t HELPER(shl_cc)(uint32_t x, uint32_t i)
+uint32_t HELPER(shl_cc)(CPUUniCore32State *env, uint32_t x, uint32_t i)
 {
     int shift = i & 0xff;
     if (shift >= 32) {
@@ -202,7 +192,7 @@ uint32_t HELPER(shl_cc)(uint32_t x, uint32_t i)
     return x;
 }
 
-uint32_t HELPER(shr_cc)(uint32_t x, uint32_t i)
+uint32_t HELPER(shr_cc)(CPUUniCore32State *env, uint32_t x, uint32_t i)
 {
     int shift = i & 0xff;
     if (shift >= 32) {
@@ -219,7 +209,7 @@ uint32_t HELPER(shr_cc)(uint32_t x, uint32_t i)
     return x;
 }
 
-uint32_t HELPER(sar_cc)(uint32_t x, uint32_t i)
+uint32_t HELPER(sar_cc)(CPUUniCore32State *env, uint32_t x, uint32_t i)
 {
     int shift = i & 0xff;
     if (shift >= 32) {
@@ -232,7 +222,7 @@ uint32_t HELPER(sar_cc)(uint32_t x, uint32_t i)
     return x;
 }
 
-uint32_t HELPER(ror_cc)(uint32_t x, uint32_t i)
+uint32_t HELPER(ror_cc)(CPUUniCore32State *env, uint32_t x, uint32_t i)
 {
     int shift1, shift;
     shift1 = i & 0xff;
@@ -247,3 +237,36 @@ uint32_t HELPER(ror_cc)(uint32_t x, uint32_t i)
         return ((uint32_t)x >> shift) | (x << (32 - shift));
     }
 }
+
+#ifndef CONFIG_USER_ONLY
+#include "exec/softmmu_exec.h"
+
+#define MMUSUFFIX _mmu
+
+#define SHIFT 0
+#include "exec/softmmu_template.h"
+
+#define SHIFT 1
+#include "exec/softmmu_template.h"
+
+#define SHIFT 2
+#include "exec/softmmu_template.h"
+
+#define SHIFT 3
+#include "exec/softmmu_template.h"
+
+void tlb_fill(CPUUniCore32State *env, target_ulong addr, int is_write,
+              int mmu_idx, uintptr_t retaddr)
+{
+    int ret;
+
+    ret = uc32_cpu_handle_mmu_fault(env, addr, is_write, mmu_idx);
+    if (unlikely(ret)) {
+        if (retaddr) {
+            /* now we have a real cpu fault */
+            cpu_restore_state(env, retaddr);
+        }
+        cpu_loop_exit(env);
+    }
+}
+#endif

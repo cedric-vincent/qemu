@@ -18,9 +18,9 @@
  */
 #include "config.h"
 #include "cpu.h"
-#include "dyngen-exec.h"
-#include "disas.h"
+#include "disas/disas.h"
 #include "tcg.h"
+#include "qemu/bitops.h"
 
 #undef EAX
 #undef ECX
@@ -38,10 +38,10 @@
 
 //#define DEBUG_SIGNAL
 
-static void exception_action(CPUState *env1)
+static void exception_action(CPUArchState *env1)
 {
 #if defined(TARGET_I386)
-    raise_exception_err_env(env1, env1->exception_index, env1->error_code);
+    raise_exception_err(env1, env1->exception_index, env1->error_code);
 #else
     cpu_loop_exit(env1);
 #endif
@@ -50,17 +50,13 @@ static void exception_action(CPUState *env1)
 /* exit the current TB from a signal handler. The host registers are
    restored in a state compatible with the CPU emulator
  */
-void cpu_resume_from_signal(CPUState *env1, void *puc)
+void cpu_resume_from_signal(CPUArchState *env1, void *puc)
 {
 #ifdef __linux__
     struct ucontext *uc = puc;
 #elif defined(__OpenBSD__)
     struct sigcontext *uc = puc;
 #endif
-
-    env = env1;
-
-    /* XXX: restore cpu registers saved in host registers */
 
     if (puc) {
         /* XXX: use siglongjmp ? */
@@ -74,33 +70,36 @@ void cpu_resume_from_signal(CPUState *env1, void *puc)
         sigprocmask(SIG_SETMASK, &uc->sc_mask, NULL);
 #endif
     }
-    env->exception_index = -1;
-    longjmp(env->jmp_env, 1);
+    env1->exception_index = -1;
+    siglongjmp(env1->jmp_env, 1);
 }
 
 /* 'pc' is the host PC at which the exception was raised. 'address' is
    the effective address of the memory exception. 'is_write' is 1 if a
    write caused the exception and otherwise 0'. 'old_set' is the
    signal set which should be restored */
-static inline int handle_cpu_signal(unsigned long pc, unsigned long address,
+static inline int handle_cpu_signal(uintptr_t pc, unsigned long address,
                                     int is_write, sigset_t *old_set,
                                     void *puc)
 {
-    TranslationBlock *tb;
+    CPUArchState *env;
     int ret;
 
-    if (cpu_single_env) {
-        env = cpu_single_env; /* XXX: find a correct solution for multithread */
-    }
 #if defined(DEBUG_SIGNAL)
     qemu_printf("qemu: SIGSEGV pc=0x%08lx address=%08lx w=%d oldset=0x%08lx\n",
                 pc, address, is_write, *(unsigned long *)old_set);
 #endif
     /* XXX: locking issue */
-    if (is_write && page_unprotect(h2g(address), pc, puc)) {
+    if (is_write && h2g_valid(address)
+        && page_unprotect(h2g(address), pc, puc)) {
         return 1;
     }
 
+    /* Convert forcefully to guest address space, invalid addresses
+       are still valid segv ones */
+    address = h2g_nocheck(address);
+
+    env = current_cpu->env_ptr;
     /* see if it is an MMU fault */
     ret = cpu_handle_mmu_fault(env, address, is_write, MMU_USER_IDX);
     if (ret < 0) {
@@ -110,12 +109,7 @@ static inline int handle_cpu_signal(unsigned long pc, unsigned long address,
         return 1; /* the MMU fault was handled without causing real CPU fault */
     }
     /* now we have a real cpu fault */
-    tb = tb_find_pc(pc);
-    if (tb) {
-        /* the PC is inside the translated code. It means that we have
-           a virtual CPU fault */
-        cpu_restore_state(tb, env, pc);
-    }
+    cpu_restore_state(env, pc);
 
     /* we restore the process signal mask as the sigreturn should
        do it (XXX: use sigsetjmp) */
@@ -448,16 +442,34 @@ int cpu_signal_handler(int host_signum, void *pinfo,
     unsigned long pc;
     int is_write;
 
-#if (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ <= 3))
+#if defined(__GLIBC__) && (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ <= 3))
     pc = uc->uc_mcontext.gregs[R15];
 #else
     pc = uc->uc_mcontext.arm_pc;
 #endif
-    /* XXX: compute is_write */
-    is_write = 0;
+
+    /* error_code is the FSR value, in which bit 11 is WnR (assuming a v6 or
+     * later processor; on v5 we will always report this as a read).
+     */
+    is_write = extract32(uc->uc_mcontext.error_code, 11, 1);
     return handle_cpu_signal(pc, (unsigned long)info->si_addr,
                              is_write,
                              &uc->uc_sigmask, puc);
+}
+
+#elif defined(__aarch64__)
+
+int cpu_signal_handler(int host_signum, void *pinfo,
+                       void *puc)
+{
+    siginfo_t *info = pinfo;
+    struct ucontext *uc = puc;
+    uint64_t pc;
+    int is_write = 0; /* XXX how to determine? */
+
+    pc = uc->uc_mcontext.pc;
+    return handle_cpu_signal(pc, (uint64_t)info->si_addr,
+                             is_write, &uc->uc_sigmask, puc);
 }
 
 #elif defined(__mc68000)
@@ -587,7 +599,7 @@ int cpu_signal_handler(int host_signum, void *pinfo,
 int cpu_signal_handler(int host_signum, void *pinfo,
                        void *puc)
 {
-    struct siginfo *info = pinfo;
+    siginfo_t *info = pinfo;
     struct ucontext *uc = puc;
     unsigned long pc = uc->uc_mcontext.sc_iaoq[0];
     uint32_t insn = *(uint32_t *)pc;

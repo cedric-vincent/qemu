@@ -4,18 +4,23 @@
  * This work is licensed under the terms of the GNU GPL, version 2.  See
  * the COPYING file in the top-level directory.
  *
+ * Contributions after 2012-01-13 are licensed under the terms of the
+ * GNU GPL, version 2 or (at your option) any later version.
  */
 
 #include <sys/mman.h>
 
-#include "hw/pci.h"
-#include "hw/pc.h"
-#include "hw/xen_common.h"
-#include "hw/xen_backend.h"
+#include "hw/pci/pci.h"
+#include "hw/i386/pc.h"
+#include "hw/xen/xen_common.h"
+#include "hw/xen/xen_backend.h"
+#include "qmp-commands.h"
 
-#include "range.h"
-#include "xen-mapcache.h"
+#include "sysemu/char.h"
+#include "qemu/range.h"
+#include "sysemu/xen-mapcache.h"
 #include "trace.h"
+#include "exec/address-spaces.h"
 
 #include <xen/hvm/ioreq.h>
 #include <xen/hvm/params.h>
@@ -30,6 +35,10 @@
 #define DPRINTF(fmt, ...) \
     do { } while (0)
 #endif
+
+static MemoryRegion ram_memory, ram_640k, ram_lo, ram_hi;
+static MemoryRegion *framebuffer;
+static bool xen_in_migration;
 
 /* Compatibility with older version */
 #if __XEN_LATEST_INTERFACE_VERSION__ < 0x0003020a
@@ -53,13 +62,17 @@ static inline ioreq_t *xen_vcpu_ioreq(shared_iopage_t *shared_page, int vcpu)
 }
 #  define FMT_ioreq_size "u"
 #endif
+#ifndef HVM_PARAM_BUFIOREQ_EVTCHN
+#define HVM_PARAM_BUFIOREQ_EVTCHN 26
+#endif
 
 #define BUFFER_IO_MAX_DELAY  100
 
 typedef struct XenPhysmap {
-    target_phys_addr_t start_addr;
+    hwaddr start_addr;
     ram_addr_t size;
-    target_phys_addr_t phys_offset;
+    char *name;
+    hwaddr phys_offset;
 
     QLIST_ENTRY(XenPhysmap) list;
 } XenPhysmap;
@@ -70,17 +83,22 @@ typedef struct XenIOState {
     QEMUTimer *buffered_io_timer;
     /* the evtchn port for polling the notification, */
     evtchn_port_t *ioreq_local_port;
+    /* evtchn local port for buffered io */
+    evtchn_port_t bufioreq_local_port;
     /* the evtchn fd for polling */
     XenEvtchn xce_handle;
     /* which vcpu we are serving */
     int send_vcpu;
 
     struct xs_handle *xenstore;
-    CPUPhysMemoryClient client;
+    MemoryListener memory_listener;
     QLIST_HEAD(, XenPhysmap) physmap;
+    hwaddr free_phys_offset;
     const XenPhysmap *log_for_dirtybit;
 
     Notifier exit;
+    Notifier suspend;
+    Notifier wakeup;
 } XenIOState;
 
 /* Xen specific function for piix pci */
@@ -113,12 +131,14 @@ void xen_piix_pci_write_config_client(uint32_t address, uint32_t val, int len)
     }
 }
 
-void xen_cmos_set_s3_resume(void *opaque, int irq, int level)
+void xen_hvm_inject_msi(uint64_t addr, uint32_t data)
 {
-    pc_cmos_set_s3_resume(opaque, irq, level);
-    if (level) {
-        xc_set_hvm_param(xen_xc, xen_domid, HVM_PARAM_ACPI_S_STATE, 3);
-    }
+    xen_xc_hvm_inject_msi(xen_xc, xen_domid, addr, data);
+}
+
+static void xen_suspend_notifier(Notifier *notifier, void *data)
+{
+    xc_set_hvm_param(xen_xc, xen_domid, HVM_PARAM_ACPI_S_STATE, 3);
 }
 
 /* Xen Interrupt Controller */
@@ -135,29 +155,22 @@ qemu_irq *xen_interrupt_controller_init(void)
 
 /* Memory Ops */
 
-static void xen_ram_init(ram_addr_t ram_size)
+static void xen_ram_init(ram_addr_t ram_size, MemoryRegion **ram_memory_p)
 {
-    RAMBlock *new_block;
+    MemoryRegion *sysmem = get_system_memory();
     ram_addr_t below_4g_mem_size, above_4g_mem_size = 0;
+    ram_addr_t block_len;
 
-    new_block = g_malloc0(sizeof (*new_block));
-    pstrcpy(new_block->idstr, sizeof (new_block->idstr), "xen.ram");
-    new_block->host = NULL;
-    new_block->offset = 0;
-    new_block->length = ram_size;
+    block_len = ram_size;
     if (ram_size >= HVM_BELOW_4G_RAM_END) {
         /* Xen does not allocate the memory continuously, and keep a hole at
          * HVM_BELOW_4G_MMIO_START of HVM_BELOW_4G_MMIO_LENGTH
          */
-        new_block->length += HVM_BELOW_4G_MMIO_LENGTH;
+        block_len += HVM_BELOW_4G_MMIO_LENGTH;
     }
-
-    QLIST_INSERT_HEAD(&ram_list.blocks, new_block, next);
-
-    ram_list.phys_dirty = g_realloc(ram_list.phys_dirty,
-                                       new_block->length >> TARGET_PAGE_BITS);
-    memset(ram_list.phys_dirty + (new_block->offset >> TARGET_PAGE_BITS),
-           0xff, new_block->length >> TARGET_PAGE_BITS);
+    memory_region_init_ram(&ram_memory, NULL, "xen.ram", block_len);
+    *ram_memory_p = &ram_memory;
+    vmstate_register_ram_global(&ram_memory);
 
     if (ram_size >= HVM_BELOW_4G_RAM_END) {
         above_4g_mem_size = ram_size - HVM_BELOW_4G_RAM_END;
@@ -166,26 +179,43 @@ static void xen_ram_init(ram_addr_t ram_size)
         below_4g_mem_size = ram_size;
     }
 
-    cpu_register_physical_memory(0, 0xa0000, 0);
+    memory_region_init_alias(&ram_640k, NULL, "xen.ram.640k",
+                             &ram_memory, 0, 0xa0000);
+    memory_region_add_subregion(sysmem, 0, &ram_640k);
     /* Skip of the VGA IO memory space, it will be registered later by the VGA
      * emulated device.
      *
      * The area between 0xc0000 and 0x100000 will be used by SeaBIOS to load
      * the Options ROM, so it is registered here as RAM.
      */
-    cpu_register_physical_memory(0xc0000, below_4g_mem_size - 0xc0000,
-                                 0xc0000);
+    memory_region_init_alias(&ram_lo, NULL, "xen.ram.lo",
+                             &ram_memory, 0xc0000, below_4g_mem_size - 0xc0000);
+    memory_region_add_subregion(sysmem, 0xc0000, &ram_lo);
     if (above_4g_mem_size > 0) {
-        cpu_register_physical_memory(0x100000000ULL, above_4g_mem_size,
-                                     0x100000000ULL);
+        memory_region_init_alias(&ram_hi, NULL, "xen.ram.hi",
+                                 &ram_memory, 0x100000000ULL,
+                                 above_4g_mem_size);
+        memory_region_add_subregion(sysmem, 0x100000000ULL, &ram_hi);
     }
 }
 
-void xen_ram_alloc(ram_addr_t ram_addr, ram_addr_t size)
+void xen_ram_alloc(ram_addr_t ram_addr, ram_addr_t size, MemoryRegion *mr)
 {
     unsigned long nr_pfn;
     xen_pfn_t *pfn_list;
     int i;
+
+    if (runstate_check(RUN_STATE_INMIGRATE)) {
+        /* RAM already populated in Xen */
+        fprintf(stderr, "%s: do not alloc "RAM_ADDR_FMT
+                " bytes of ram at "RAM_ADDR_FMT" when runstate is INMIGRATE\n",
+                __func__, size, ram_addr); 
+        return;
+    }
+
+    if (mr == &ram_memory) {
+        return;
+    }
 
     trace_xen_ram_alloc(ram_addr, size);
 
@@ -204,7 +234,7 @@ void xen_ram_alloc(ram_addr_t ram_addr, ram_addr_t size)
 }
 
 static XenPhysmap *get_physmapping(XenIOState *state,
-                                   target_phys_addr_t start_addr, ram_addr_t size)
+                                   hwaddr start_addr, ram_addr_t size)
 {
     XenPhysmap *physmap = NULL;
 
@@ -218,17 +248,35 @@ static XenPhysmap *get_physmapping(XenIOState *state,
     return NULL;
 }
 
+static hwaddr xen_phys_offset_to_gaddr(hwaddr start_addr,
+                                                   ram_addr_t size, void *opaque)
+{
+    hwaddr addr = start_addr & TARGET_PAGE_MASK;
+    XenIOState *xen_io_state = opaque;
+    XenPhysmap *physmap = NULL;
+
+    QLIST_FOREACH(physmap, &xen_io_state->physmap, list) {
+        if (range_covers_byte(physmap->phys_offset, physmap->size, addr)) {
+            return physmap->start_addr;
+        }
+    }
+
+    return start_addr;
+}
+
 #if CONFIG_XEN_CTRL_INTERFACE_VERSION >= 340
 static int xen_add_to_physmap(XenIOState *state,
-                              target_phys_addr_t start_addr,
+                              hwaddr start_addr,
                               ram_addr_t size,
-                              target_phys_addr_t phys_offset)
+                              MemoryRegion *mr,
+                              hwaddr offset_within_region)
 {
     unsigned long i = 0;
     int rc = 0;
     XenPhysmap *physmap = NULL;
-    target_phys_addr_t pfn, start_gpfn;
-    RAMBlock *block;
+    hwaddr pfn, start_gpfn;
+    hwaddr phys_offset = memory_region_get_ram_addr(mr);
+    char path[80], value[17];
 
     if (get_physmapping(state, start_addr, size)) {
         return 0;
@@ -241,17 +289,14 @@ static int xen_add_to_physmap(XenIOState *state,
      * the linear framebuffer to be that region.
      * Avoid tracking any regions that is not videoram and avoid tracking
      * the legacy vga region. */
-    QLIST_FOREACH(block, &ram_list.blocks, next) {
-        if (!strcmp(block->idstr, "vga.vram") && block->offset == phys_offset
-                && start_addr > 0xbffff) {
-            goto go_physmap;
-        }
+    if (mr == framebuffer && start_addr > 0xbffff) {
+        goto go_physmap;
     }
     return -1;
 
 go_physmap:
-    DPRINTF("mapping vram to %llx - %llx, from %llx\n",
-            start_addr, start_addr + size, phys_offset);
+    DPRINTF("mapping vram to %"HWADDR_PRIx" - %"HWADDR_PRIx"\n",
+            start_addr, start_addr + size);
 
     pfn = phys_offset >> TARGET_PAGE_BITS;
     start_gpfn = start_addr >> TARGET_PAGE_BITS;
@@ -271,6 +316,7 @@ go_physmap:
 
     physmap->start_addr = start_addr;
     physmap->size = size;
+    physmap->name = (char *)mr->name;
     physmap->phys_offset = phys_offset;
 
     QLIST_INSERT_HEAD(&state->physmap, physmap, list);
@@ -279,17 +325,41 @@ go_physmap:
                                    start_addr >> TARGET_PAGE_BITS,
                                    (start_addr + size) >> TARGET_PAGE_BITS,
                                    XEN_DOMCTL_MEM_CACHEATTR_WB);
+
+    snprintf(path, sizeof(path),
+            "/local/domain/0/device-model/%d/physmap/%"PRIx64"/start_addr",
+            xen_domid, (uint64_t)phys_offset);
+    snprintf(value, sizeof(value), "%"PRIx64, (uint64_t)start_addr);
+    if (!xs_write(state->xenstore, 0, path, value, strlen(value))) {
+        return -1;
+    }
+    snprintf(path, sizeof(path),
+            "/local/domain/0/device-model/%d/physmap/%"PRIx64"/size",
+            xen_domid, (uint64_t)phys_offset);
+    snprintf(value, sizeof(value), "%"PRIx64, (uint64_t)size);
+    if (!xs_write(state->xenstore, 0, path, value, strlen(value))) {
+        return -1;
+    }
+    if (mr->name) {
+        snprintf(path, sizeof(path),
+                "/local/domain/0/device-model/%d/physmap/%"PRIx64"/name",
+                xen_domid, (uint64_t)phys_offset);
+        if (!xs_write(state->xenstore, 0, path, mr->name, strlen(mr->name))) {
+            return -1;
+        }
+    }
+
     return 0;
 }
 
 static int xen_remove_from_physmap(XenIOState *state,
-                                   target_phys_addr_t start_addr,
+                                   hwaddr start_addr,
                                    ram_addr_t size)
 {
     unsigned long i = 0;
     int rc = 0;
     XenPhysmap *physmap = NULL;
-    target_phys_addr_t phys_offset = 0;
+    hwaddr phys_offset = 0;
 
     physmap = get_physmapping(state, start_addr, size);
     if (physmap == NULL) {
@@ -299,8 +369,8 @@ static int xen_remove_from_physmap(XenIOState *state,
     phys_offset = physmap->phys_offset;
     size = physmap->size;
 
-    DPRINTF("unmapping vram to %llx - %llx, from %llx\n",
-            phys_offset, phys_offset + size, start_addr);
+    DPRINTF("unmapping vram to %"HWADDR_PRIx" - %"HWADDR_PRIx", from ",
+            "%"HWADDR_PRIx"\n", phys_offset, phys_offset + size, start_addr);
 
     size >>= TARGET_PAGE_BITS;
     start_addr >>= TARGET_PAGE_BITS;
@@ -321,77 +391,92 @@ static int xen_remove_from_physmap(XenIOState *state,
     if (state->log_for_dirtybit == physmap) {
         state->log_for_dirtybit = NULL;
     }
-    free(physmap);
+    g_free(physmap);
 
     return 0;
 }
 
 #else
 static int xen_add_to_physmap(XenIOState *state,
-                              target_phys_addr_t start_addr,
+                              hwaddr start_addr,
                               ram_addr_t size,
-                              target_phys_addr_t phys_offset)
+                              MemoryRegion *mr,
+                              hwaddr offset_within_region)
 {
     return -ENOSYS;
 }
 
 static int xen_remove_from_physmap(XenIOState *state,
-                                   target_phys_addr_t start_addr,
+                                   hwaddr start_addr,
                                    ram_addr_t size)
 {
     return -ENOSYS;
 }
 #endif
 
-static void xen_client_set_memory(struct CPUPhysMemoryClient *client,
-                                  target_phys_addr_t start_addr,
-                                  ram_addr_t size,
-                                  ram_addr_t phys_offset,
-                                  bool log_dirty)
+static void xen_set_memory(struct MemoryListener *listener,
+                           MemoryRegionSection *section,
+                           bool add)
 {
-    XenIOState *state = container_of(client, XenIOState, client);
-    ram_addr_t flags = phys_offset & ~TARGET_PAGE_MASK;
+    XenIOState *state = container_of(listener, XenIOState, memory_listener);
+    hwaddr start_addr = section->offset_within_address_space;
+    ram_addr_t size = int128_get64(section->size);
+    bool log_dirty = memory_region_is_logging(section->mr);
     hvmmem_type_t mem_type;
 
-    if (!(start_addr != phys_offset
-          && ( (log_dirty && flags < IO_MEM_UNASSIGNED)
-               || (!log_dirty && flags == IO_MEM_UNASSIGNED)))) {
+    if (!memory_region_is_ram(section->mr)) {
         return;
     }
 
-    trace_xen_client_set_memory(start_addr, size, phys_offset, log_dirty);
+    if (!(section->mr != &ram_memory
+          && ( (log_dirty && add) || (!log_dirty && !add)))) {
+        return;
+    }
+
+    trace_xen_client_set_memory(start_addr, size, log_dirty);
 
     start_addr &= TARGET_PAGE_MASK;
     size = TARGET_PAGE_ALIGN(size);
-    phys_offset &= TARGET_PAGE_MASK;
 
-    switch (flags) {
-    case IO_MEM_RAM:
-        xen_add_to_physmap(state, start_addr, size, phys_offset);
-        break;
-    case IO_MEM_ROM:
-        mem_type = HVMMEM_ram_ro;
-        if (xc_hvm_set_mem_type(xen_xc, xen_domid, mem_type,
-                                start_addr >> TARGET_PAGE_BITS,
-                                size >> TARGET_PAGE_BITS)) {
-            DPRINTF("xc_hvm_set_mem_type error, addr: "TARGET_FMT_plx"\n",
-                    start_addr);
+    if (add) {
+        if (!memory_region_is_rom(section->mr)) {
+            xen_add_to_physmap(state, start_addr, size,
+                               section->mr, section->offset_within_region);
+        } else {
+            mem_type = HVMMEM_ram_ro;
+            if (xc_hvm_set_mem_type(xen_xc, xen_domid, mem_type,
+                                    start_addr >> TARGET_PAGE_BITS,
+                                    size >> TARGET_PAGE_BITS)) {
+                DPRINTF("xc_hvm_set_mem_type error, addr: "TARGET_FMT_plx"\n",
+                        start_addr);
+            }
         }
-        break;
-    case IO_MEM_UNASSIGNED:
+    } else {
         if (xen_remove_from_physmap(state, start_addr, size) < 0) {
             DPRINTF("physmapping does not exist at "TARGET_FMT_plx"\n", start_addr);
         }
-        break;
     }
 }
 
-static int xen_sync_dirty_bitmap(XenIOState *state,
-                                 target_phys_addr_t start_addr,
-                                 ram_addr_t size)
+static void xen_region_add(MemoryListener *listener,
+                           MemoryRegionSection *section)
 {
-    target_phys_addr_t npages = size >> TARGET_PAGE_BITS;
-    target_phys_addr_t vram_offset = 0;
+    memory_region_ref(section->mr);
+    xen_set_memory(listener, section, true);
+}
+
+static void xen_region_del(MemoryListener *listener,
+                           MemoryRegionSection *section)
+{
+    xen_set_memory(listener, section, false);
+    memory_region_unref(section->mr);
+}
+
+static void xen_sync_dirty_bitmap(XenIOState *state,
+                                  hwaddr start_addr,
+                                  ram_addr_t size)
+{
+    hwaddr npages = size >> TARGET_PAGE_BITS;
     const int width = sizeof(unsigned long) * 8;
     unsigned long bitmap[(npages + width - 1) / width];
     int rc, i, j;
@@ -400,21 +485,27 @@ static int xen_sync_dirty_bitmap(XenIOState *state,
     physmap = get_physmapping(state, start_addr, size);
     if (physmap == NULL) {
         /* not handled */
-        return -1;
+        return;
     }
 
     if (state->log_for_dirtybit == NULL) {
         state->log_for_dirtybit = physmap;
     } else if (state->log_for_dirtybit != physmap) {
-        return -1;
+        /* Only one range for dirty bitmap can be tracked. */
+        return;
     }
-    vram_offset = physmap->phys_offset;
 
     rc = xc_hvm_track_dirty_vram(xen_xc, xen_domid,
                                  start_addr >> TARGET_PAGE_BITS, npages,
                                  bitmap);
-    if (rc) {
-        return rc;
+    if (rc < 0) {
+        if (rc != -ENODATA) {
+            memory_region_set_dirty(framebuffer, 0, size);
+            DPRINTF("xen: track_dirty_vram failed (0x" TARGET_FMT_plx
+                    ", 0x" TARGET_FMT_plx "): %s\n",
+                    start_addr, start_addr + size, strerror(-rc));
+        }
+        return;
     }
 
     for (i = 0; i < ARRAY_SIZE(bitmap); i++) {
@@ -422,68 +513,68 @@ static int xen_sync_dirty_bitmap(XenIOState *state,
         while (map != 0) {
             j = ffsl(map) - 1;
             map &= ~(1ul << j);
-            cpu_physical_memory_set_dirty(vram_offset + (i * width + j) * TARGET_PAGE_SIZE);
+            memory_region_set_dirty(framebuffer,
+                                    (i * width + j) * TARGET_PAGE_SIZE,
+                                    TARGET_PAGE_SIZE);
         };
     }
-
-    return 0;
 }
 
-static int xen_log_start(CPUPhysMemoryClient *client, target_phys_addr_t phys_addr, ram_addr_t size)
+static void xen_log_start(MemoryListener *listener,
+                          MemoryRegionSection *section)
 {
-    XenIOState *state = container_of(client, XenIOState, client);
+    XenIOState *state = container_of(listener, XenIOState, memory_listener);
 
-    return xen_sync_dirty_bitmap(state, phys_addr, size);
+    xen_sync_dirty_bitmap(state, section->offset_within_address_space,
+                          int128_get64(section->size));
 }
 
-static int xen_log_stop(CPUPhysMemoryClient *client, target_phys_addr_t phys_addr, ram_addr_t size)
+static void xen_log_stop(MemoryListener *listener, MemoryRegionSection *section)
 {
-    XenIOState *state = container_of(client, XenIOState, client);
+    XenIOState *state = container_of(listener, XenIOState, memory_listener);
 
     state->log_for_dirtybit = NULL;
     /* Disable dirty bit tracking */
-    return xc_hvm_track_dirty_vram(xen_xc, xen_domid, 0, 0, NULL);
+    xc_hvm_track_dirty_vram(xen_xc, xen_domid, 0, 0, NULL);
 }
 
-static int xen_client_sync_dirty_bitmap(struct CPUPhysMemoryClient *client,
-                                        target_phys_addr_t start_addr,
-                                        target_phys_addr_t end_addr)
+static void xen_log_sync(MemoryListener *listener, MemoryRegionSection *section)
 {
-    XenIOState *state = container_of(client, XenIOState, client);
+    XenIOState *state = container_of(listener, XenIOState, memory_listener);
 
-    return xen_sync_dirty_bitmap(state, start_addr, end_addr - start_addr);
+    xen_sync_dirty_bitmap(state, section->offset_within_address_space,
+                          int128_get64(section->size));
 }
 
-static int xen_client_migration_log(struct CPUPhysMemoryClient *client,
-                                    int enable)
+static void xen_log_global_start(MemoryListener *listener)
 {
-    return 0;
+    if (xen_enabled()) {
+        xen_in_migration = true;
+    }
 }
 
-static CPUPhysMemoryClient xen_cpu_phys_memory_client = {
-    .set_memory = xen_client_set_memory,
-    .sync_dirty_bitmap = xen_client_sync_dirty_bitmap,
-    .migration_log = xen_client_migration_log,
+static void xen_log_global_stop(MemoryListener *listener)
+{
+    xen_in_migration = false;
+}
+
+static MemoryListener xen_memory_listener = {
+    .region_add = xen_region_add,
+    .region_del = xen_region_del,
     .log_start = xen_log_start,
     .log_stop = xen_log_stop,
+    .log_sync = xen_log_sync,
+    .log_global_start = xen_log_global_start,
+    .log_global_stop = xen_log_global_stop,
+    .priority = 10,
 };
 
-/* VCPU Operations, MMIO, IO ring ... */
-
-static void xen_reset_vcpu(void *opaque)
+void qmp_xen_set_global_dirty_log(bool enable, Error **errp)
 {
-    CPUState *env = opaque;
-
-    env->halted = 1;
-}
-
-void xen_vcpu_init(void)
-{
-    CPUState *first_cpu;
-
-    if ((first_cpu = qemu_get_cpu(0))) {
-        qemu_register_reset(xen_reset_vcpu, first_cpu);
-        xen_reset_vcpu(first_cpu);
+    if (enable) {
+        memory_global_dirty_log_start();
+    } else {
+        memory_global_dirty_log_stop();
     }
 }
 
@@ -516,14 +607,20 @@ static ioreq_t *cpu_get_ioreq(XenIOState *state)
     evtchn_port_t port;
 
     port = xc_evtchn_pending(state->xce_handle);
+    if (port == state->bufioreq_local_port) {
+        timer_mod(state->buffered_io_timer,
+                BUFFER_IO_MAX_DELAY + qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
+        return NULL;
+    }
+
     if (port != -1) {
-        for (i = 0; i < smp_cpus; i++) {
+        for (i = 0; i < max_cpus; i++) {
             if (state->ioreq_local_port[i] == port) {
                 break;
             }
         }
 
-        if (i == smp_cpus) {
+        if (i == max_cpus) {
             hw_error("Fatal error while trying to get io event!\n");
         }
 
@@ -568,11 +665,45 @@ static void do_outp(pio_addr_t addr,
     }
 }
 
+/*
+ * Helper functions which read/write an object from/to physical guest
+ * memory, as part of the implementation of an ioreq.
+ *
+ * Equivalent to
+ *   cpu_physical_memory_rw(addr + (req->df ? -1 : +1) * req->size * i,
+ *                          val, req->size, 0/1)
+ * except without the integer overflow problems.
+ */
+static void rw_phys_req_item(hwaddr addr,
+                             ioreq_t *req, uint32_t i, void *val, int rw)
+{
+    /* Do everything unsigned so overflow just results in a truncated result
+     * and accesses to undesired parts of guest memory, which is up
+     * to the guest */
+    hwaddr offset = (hwaddr)req->size * i;
+    if (req->df) {
+        addr -= offset;
+    } else {
+        addr += offset;
+    }
+    cpu_physical_memory_rw(addr, val, req->size, rw);
+}
+
+static inline void read_phys_req_item(hwaddr addr,
+                                      ioreq_t *req, uint32_t i, void *val)
+{
+    rw_phys_req_item(addr, req, i, val, 0);
+}
+static inline void write_phys_req_item(hwaddr addr,
+                                       ioreq_t *req, uint32_t i, void *val)
+{
+    rw_phys_req_item(addr, req, i, val, 1);
+}
+
+
 static void cpu_ioreq_pio(ioreq_t *req)
 {
-    int i, sign;
-
-    sign = req->df ? -1 : 1;
+    uint32_t i;
 
     if (req->dir == IOREQ_READ) {
         if (!req->data_is_ptr) {
@@ -582,8 +713,7 @@ static void cpu_ioreq_pio(ioreq_t *req)
 
             for (i = 0; i < req->count; i++) {
                 tmp = do_inp(req->addr, req->size);
-                cpu_physical_memory_write(req->data + (sign * i * req->size),
-                        (uint8_t *) &tmp, req->size);
+                write_phys_req_item(req->data, req, i, &tmp);
             }
         }
     } else if (req->dir == IOREQ_WRITE) {
@@ -593,8 +723,7 @@ static void cpu_ioreq_pio(ioreq_t *req)
             for (i = 0; i < req->count; i++) {
                 uint32_t tmp = 0;
 
-                cpu_physical_memory_read(req->data + (sign * i * req->size),
-                        (uint8_t*) &tmp, req->size);
+                read_phys_req_item(req->data, req, i, &tmp);
                 do_outp(req->addr, req->size, tmp);
             }
         }
@@ -603,20 +732,16 @@ static void cpu_ioreq_pio(ioreq_t *req)
 
 static void cpu_ioreq_move(ioreq_t *req)
 {
-    int i, sign;
-
-    sign = req->df ? -1 : 1;
+    uint32_t i;
 
     if (!req->data_is_ptr) {
         if (req->dir == IOREQ_READ) {
             for (i = 0; i < req->count; i++) {
-                cpu_physical_memory_read(req->addr + (sign * i * req->size),
-                        (uint8_t *) &req->data, req->size);
+                read_phys_req_item(req->addr, req, i, &req->data);
             }
         } else if (req->dir == IOREQ_WRITE) {
             for (i = 0; i < req->count; i++) {
-                cpu_physical_memory_write(req->addr + (sign * i * req->size),
-                        (uint8_t *) &req->data, req->size);
+                write_phys_req_item(req->addr, req, i, &req->data);
             }
         }
     } else {
@@ -624,17 +749,13 @@ static void cpu_ioreq_move(ioreq_t *req)
 
         if (req->dir == IOREQ_READ) {
             for (i = 0; i < req->count; i++) {
-                cpu_physical_memory_read(req->addr + (sign * i * req->size),
-                        (uint8_t*) &tmp, req->size);
-                cpu_physical_memory_write(req->data + (sign * i * req->size),
-                        (uint8_t*) &tmp, req->size);
+                read_phys_req_item(req->addr, req, i, &tmp);
+                write_phys_req_item(req->data, req, i, &tmp);
             }
         } else if (req->dir == IOREQ_WRITE) {
             for (i = 0; i < req->count; i++) {
-                cpu_physical_memory_read(req->data + (sign * i * req->size),
-                        (uint8_t*) &tmp, req->size);
-                cpu_physical_memory_write(req->addr + (sign * i * req->size),
-                        (uint8_t*) &tmp, req->size);
+                read_phys_req_item(req->data, req, i, &tmp);
+                write_phys_req_item(req->addr, req, i, &tmp);
             }
         }
     }
@@ -664,15 +785,17 @@ static void handle_ioreq(ioreq_t *req)
     }
 }
 
-static void handle_buffered_iopage(XenIOState *state)
+static int handle_buffered_iopage(XenIOState *state)
 {
     buf_ioreq_t *buf_req = NULL;
     ioreq_t req;
     int qw;
 
     if (!state->buffered_io_page) {
-        return;
+        return 0;
     }
+
+    memset(&req, 0x00, sizeof(req));
 
     while (state->buffered_io_page->read_pointer != state->buffered_io_page->write_pointer) {
         buf_req = &state->buffered_io_page->buf_ioreq[
@@ -698,15 +821,21 @@ static void handle_buffered_iopage(XenIOState *state)
         xen_mb();
         state->buffered_io_page->read_pointer += qw ? 2 : 1;
     }
+
+    return req.count;
 }
 
 static void handle_buffered_io(void *opaque)
 {
     XenIOState *state = opaque;
 
-    handle_buffered_iopage(state);
-    qemu_mod_timer(state->buffered_io_timer,
-                   BUFFER_IO_MAX_DELAY + qemu_get_clock_ms(rt_clock));
+    if (handle_buffered_iopage(state)) {
+        timer_mod(state->buffered_io_timer,
+                BUFFER_IO_MAX_DELAY + qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
+    } else {
+        timer_del(state->buffered_io_timer);
+        xc_evtchn_unmask(state->xce_handle, state->bufioreq_local_port);
+    }
 }
 
 static void cpu_handle_ioreq(void *opaque)
@@ -724,7 +853,7 @@ static void cpu_handle_ioreq(void *opaque)
                     "data: %"PRIx64", count: %" FMT_ioreq_size ", size: %" FMT_ioreq_size "\n",
                     req->state, req->data_is_ptr, req->addr,
                     req->data, req->count, req->size);
-            destroy_hvm_domain();
+            destroy_hvm_domain(false);
             return;
         }
 
@@ -738,10 +867,11 @@ static void cpu_handle_ioreq(void *opaque)
          */
         if (runstate_is_running()) {
             if (qemu_shutdown_requested_get()) {
-                destroy_hvm_domain();
+                destroy_hvm_domain(false);
             }
             if (qemu_reset_requested_get()) {
                 qemu_system_reset(VMRESET_REPORT);
+                destroy_hvm_domain(true);
             }
         }
 
@@ -819,7 +949,7 @@ static void xenstore_record_dm_state(struct xs_handle *xs, const char *state)
         exit(1);
     }
 
-    snprintf(path, sizeof (path), "/local/domain/0/device-model/%u/state", xen_domid);
+    snprintf(path, sizeof (path), "device-model/%u/state", xen_domid);
     if (!xs_write(xs, XBT_NULL, path, state, strlen(state))) {
         fprintf(stderr, "error recording dm state\n");
         exit(1);
@@ -834,9 +964,8 @@ static void xen_main_loop_prepare(XenIOState *state)
         evtchn_fd = xc_evtchn_fd(state->xce_handle);
     }
 
-    state->buffered_io_timer = qemu_new_timer_ms(rt_clock, handle_buffered_io,
+    state->buffered_io_timer = timer_new_ms(QEMU_CLOCK_REALTIME, handle_buffered_io,
                                                  state);
-    qemu_mod_timer(state->buffered_io_timer, qemu_get_clock_ms(rt_clock));
 
     if (evtchn_fd != -1) {
         qemu_set_fd_handler(evtchn_fd, cpu_handle_ioreq, NULL, state);
@@ -884,10 +1013,64 @@ int xen_init(void)
     return 0;
 }
 
-int xen_hvm_init(void)
+static void xen_read_physmap(XenIOState *state)
+{
+    XenPhysmap *physmap = NULL;
+    unsigned int len, num, i;
+    char path[80], *value = NULL;
+    char **entries = NULL;
+
+    snprintf(path, sizeof(path),
+            "/local/domain/0/device-model/%d/physmap", xen_domid);
+    entries = xs_directory(state->xenstore, 0, path, &num);
+    if (entries == NULL)
+        return;
+
+    for (i = 0; i < num; i++) {
+        physmap = g_malloc(sizeof (XenPhysmap));
+        physmap->phys_offset = strtoull(entries[i], NULL, 16);
+        snprintf(path, sizeof(path),
+                "/local/domain/0/device-model/%d/physmap/%s/start_addr",
+                xen_domid, entries[i]);
+        value = xs_read(state->xenstore, 0, path, &len);
+        if (value == NULL) {
+            g_free(physmap);
+            continue;
+        }
+        physmap->start_addr = strtoull(value, NULL, 16);
+        free(value);
+
+        snprintf(path, sizeof(path),
+                "/local/domain/0/device-model/%d/physmap/%s/size",
+                xen_domid, entries[i]);
+        value = xs_read(state->xenstore, 0, path, &len);
+        if (value == NULL) {
+            g_free(physmap);
+            continue;
+        }
+        physmap->size = strtoull(value, NULL, 16);
+        free(value);
+
+        snprintf(path, sizeof(path),
+                "/local/domain/0/device-model/%d/physmap/%s/name",
+                xen_domid, entries[i]);
+        physmap->name = xs_read(state->xenstore, 0, path, &len);
+
+        QLIST_INSERT_HEAD(&state->physmap, physmap, list);
+    }
+    free(entries);
+}
+
+static void xen_wakeup_notifier(Notifier *notifier, void *data)
+{
+    xc_set_hvm_param(xen_xc, xen_domid, HVM_PARAM_ACPI_S_STATE, 0);
+}
+
+int xen_hvm_init(MemoryRegion **ram_memory)
 {
     int i, rc;
     unsigned long ioreq_pfn;
+    unsigned long bufioreq_evtchn;
     XenIOState *state;
 
     state = g_malloc0(sizeof (XenIOState));
@@ -895,17 +1078,25 @@ int xen_hvm_init(void)
     state->xce_handle = xen_xc_evtchn_open(NULL, 0);
     if (state->xce_handle == XC_HANDLER_INITIAL_VALUE) {
         perror("xen: event channel open");
+        g_free(state);
         return -errno;
     }
 
     state->xenstore = xs_daemon_open();
     if (state->xenstore == NULL) {
         perror("xen: xenstore open");
+        g_free(state);
         return -errno;
     }
 
     state->exit.notify = xen_exit_notifier;
     qemu_add_exit_notifier(&state->exit);
+
+    state->suspend.notify = xen_suspend_notifier;
+    qemu_register_suspend_notifier(&state->suspend);
+
+    state->wakeup.notify = xen_wakeup_notifier;
+    qemu_register_wakeup_notifier(&state->wakeup);
 
     xc_get_hvm_param(xen_xc, xen_domid, HVM_PARAM_IOREQ_PFN, &ioreq_pfn);
     DPRINTF("shared page at pfn %lx\n", ioreq_pfn);
@@ -924,10 +1115,10 @@ int xen_hvm_init(void)
         hw_error("map buffered IO page returned error %d", errno);
     }
 
-    state->ioreq_local_port = g_malloc0(smp_cpus * sizeof (evtchn_port_t));
+    state->ioreq_local_port = g_malloc0(max_cpus * sizeof (evtchn_port_t));
 
     /* FIXME: how about if we overflow the page here? */
-    for (i = 0; i < smp_cpus; i++) {
+    for (i = 0; i < max_cpus; i++) {
         rc = xc_evtchn_bind_interdomain(state->xce_handle, xen_domid,
                                         xen_vcpu_eport(state->shared_page, i));
         if (rc == -1) {
@@ -937,15 +1128,29 @@ int xen_hvm_init(void)
         state->ioreq_local_port[i] = rc;
     }
 
+    rc = xc_get_hvm_param(xen_xc, xen_domid, HVM_PARAM_BUFIOREQ_EVTCHN,
+            &bufioreq_evtchn);
+    if (rc < 0) {
+        fprintf(stderr, "failed to get HVM_PARAM_BUFIOREQ_EVTCHN\n");
+        return -1;
+    }
+    rc = xc_evtchn_bind_interdomain(state->xce_handle, xen_domid,
+            (uint32_t)bufioreq_evtchn);
+    if (rc == -1) {
+        fprintf(stderr, "bind interdomain ioctl error %d\n", errno);
+        return -1;
+    }
+    state->bufioreq_local_port = rc;
+
     /* Init RAM management */
-    xen_map_cache_init();
-    xen_ram_init(ram_size);
+    xen_map_cache_init(xen_phys_offset_to_gaddr, state);
+    xen_ram_init(ram_size, ram_memory);
 
     qemu_add_vm_change_state_handler(xen_hvm_change_state_handler, state);
 
-    state->client = xen_cpu_phys_memory_client;
+    state->memory_listener = xen_memory_listener;
     QLIST_INIT(&state->physmap);
-    cpu_register_phys_memory_client(&state->client);
+    memory_listener_register(&state->memory_listener, &address_space_memory);
     state->log_for_dirtybit = NULL;
 
     /* Initialize backend core & drivers */
@@ -956,11 +1161,12 @@ int xen_hvm_init(void)
     xen_be_register("console", &xen_console_ops);
     xen_be_register("vkbd", &xen_kbdmouse_ops);
     xen_be_register("qdisk", &xen_blkdev_ops);
+    xen_read_physmap(state);
 
     return 0;
 }
 
-void destroy_hvm_domain(void)
+void destroy_hvm_domain(bool reboot)
 {
     XenXC xc_handle;
     int sts;
@@ -969,13 +1175,54 @@ void destroy_hvm_domain(void)
     if (xc_handle == XC_HANDLER_INITIAL_VALUE) {
         fprintf(stderr, "Cannot acquire xenctrl handle\n");
     } else {
-        sts = xc_domain_shutdown(xc_handle, xen_domid, SHUTDOWN_poweroff);
+        sts = xc_domain_shutdown(xc_handle, xen_domid,
+                                 reboot ? SHUTDOWN_reboot : SHUTDOWN_poweroff);
         if (sts != 0) {
-            fprintf(stderr, "? xc_domain_shutdown failed to issue poweroff, "
-                    "sts %d, %s\n", sts, strerror(errno));
+            fprintf(stderr, "xc_domain_shutdown failed to issue %s, "
+                    "sts %d, %s\n", reboot ? "reboot" : "poweroff",
+                    sts, strerror(errno));
         } else {
-            fprintf(stderr, "Issued domain %d poweroff\n", xen_domid);
+            fprintf(stderr, "Issued domain %d %s\n", xen_domid,
+                    reboot ? "reboot" : "poweroff");
         }
         xc_interface_close(xc_handle);
+    }
+}
+
+void xen_register_framebuffer(MemoryRegion *mr)
+{
+    framebuffer = mr;
+}
+
+void xen_shutdown_fatal_error(const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "Will destroy the domain.\n");
+    /* destroy the domain */
+    qemu_system_shutdown_request();
+}
+
+void xen_modified_memory(ram_addr_t start, ram_addr_t length)
+{
+    if (unlikely(xen_in_migration)) {
+        int rc;
+        ram_addr_t start_pfn, nb_pages;
+
+        if (length == 0) {
+            length = TARGET_PAGE_SIZE;
+        }
+        start_pfn = start >> TARGET_PAGE_BITS;
+        nb_pages = ((start + length + TARGET_PAGE_SIZE - 1) >> TARGET_PAGE_BITS)
+            - start_pfn;
+        rc = xc_hvm_modified_memory(xen_xc, xen_domid, start_pfn, nb_pages);
+        if (rc) {
+            fprintf(stderr,
+                    "%s failed for "RAM_ADDR_FMT" ("RAM_ADDR_FMT"): %i, %s\n",
+                    __func__, start, nb_pages, rc, strerror(-rc));
+        }
     }
 }

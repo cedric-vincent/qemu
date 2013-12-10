@@ -29,7 +29,7 @@
 #include <inttypes.h>
 
 #include "tcg-op.h"
-#include "def-helper.h"
+#include "exec/def-helper.h"
 #include "tcg-plugin.h"
 
 #define D4ADDR uint64_t
@@ -137,7 +137,7 @@ static void after_gen_opc(const TCGPluginInterface *tpi, const TPIOpCode *tpi_op
         info.cpu_index = 0; /* tpi_opcode->cpu_index NYI */     \
     } while (0);
 
-    switch (tpi_opcode->name) {
+    switch (*tpi_opcode->opcode) {
     case INDEX_op_qemu_ld8s:
     case INDEX_op_qemu_ld8u:
         MEMACCESS('r', 1);
@@ -202,7 +202,7 @@ static void gen_helper(const TCGPluginInterface *tpi, TCGArg *opargs, uint64_t p
     dh_sizemask(i64, 3);
     dh_sizemask(i64, 4);
 
-    tcg_gen_helperN(after_exec_opc, TCG_CALL_CONST, sizemask, TCG_CALL_DUMMY_ARG, 4, args);
+    tcg_gen_helperN(after_exec_opc, 0, sizemask, TCG_CALL_DUMMY_ARG, 4, args);
 
     tcg_temp_free_i64(tcgv_pc);
     tcg_temp_free_i64(tcgv_info);

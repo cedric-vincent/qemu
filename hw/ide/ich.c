@@ -61,12 +61,12 @@
  */
 
 #include <hw/hw.h>
-#include <hw/msi.h>
-#include <hw/pc.h>
-#include <hw/pci.h>
-#include <hw/isa.h>
-#include "block.h"
-#include "dma.h"
+#include <hw/pci/msi.h>
+#include <hw/i386/pc.h>
+#include <hw/pci/pci.h>
+#include <hw/isa/isa.h>
+#include "block/block.h"
+#include "sysemu/dma.h"
 
 #include <hw/ide/pci.h>
 #include <hw/ide/ahci.h>
@@ -79,46 +79,57 @@
 #define ICH9_IDP_INDEX          0x10
 #define ICH9_IDP_INDEX_LOG2     0x04
 
-static const VMStateDescription vmstate_ahci = {
-    .name = "ahci",
-    .unmigratable = 1,
+static const VMStateDescription vmstate_ich9_ahci = {
+    .name = "ich9_ahci",
+    .unmigratable = 1, /* Still buggy under I/O load */
+    .version_id = 1,
+    .fields = (VMStateField []) {
+        VMSTATE_PCI_DEVICE(parent_obj, AHCIPCIState),
+        VMSTATE_AHCI(ahci, AHCIPCIState),
+        VMSTATE_END_OF_LIST()
+    },
 };
+
+static void pci_ich9_reset(DeviceState *dev)
+{
+    AHCIPCIState *d = ICH_AHCI(dev);
+
+    ahci_reset(&d->ahci);
+}
 
 static int pci_ich9_ahci_init(PCIDevice *dev)
 {
     struct AHCIPCIState *d;
     int sata_cap_offset;
     uint8_t *sata_cap;
-    d = DO_UPCAST(struct AHCIPCIState, card, dev);
+    d = ICH_AHCI(dev);
 
-    ahci_init(&d->ahci, &dev->qdev, 6);
+    ahci_init(&d->ahci, DEVICE(dev), pci_get_address_space(dev), 6);
 
-    pci_config_set_prog_interface(d->card.config, AHCI_PROGMODE_MAJOR_REV_1);
+    pci_config_set_prog_interface(dev->config, AHCI_PROGMODE_MAJOR_REV_1);
 
-    d->card.config[PCI_CACHE_LINE_SIZE] = 0x08;  /* Cache line size */
-    d->card.config[PCI_LATENCY_TIMER]   = 0x00;  /* Latency timer */
-    pci_config_set_interrupt_pin(d->card.config, 1);
+    dev->config[PCI_CACHE_LINE_SIZE] = 0x08;  /* Cache line size */
+    dev->config[PCI_LATENCY_TIMER]   = 0x00;  /* Latency timer */
+    pci_config_set_interrupt_pin(dev->config, 1);
 
     /* XXX Software should program this register */
-    d->card.config[0x90]   = 1 << 6; /* Address Map Register - AHCI mode */
-
-    qemu_register_reset(ahci_reset, d);
+    dev->config[0x90]   = 1 << 6; /* Address Map Register - AHCI mode */
 
     msi_init(dev, 0x50, 1, true, false);
-    d->ahci.irq = d->card.irq[0];
+    d->ahci.irq = pci_allocate_irq(dev);
 
-    pci_register_bar(&d->card, ICH9_IDP_BAR, PCI_BASE_ADDRESS_SPACE_IO,
+    pci_register_bar(dev, ICH9_IDP_BAR, PCI_BASE_ADDRESS_SPACE_IO,
                      &d->ahci.idp);
-    pci_register_bar(&d->card, ICH9_MEM_BAR, PCI_BASE_ADDRESS_SPACE_MEMORY,
+    pci_register_bar(dev, ICH9_MEM_BAR, PCI_BASE_ADDRESS_SPACE_MEMORY,
                      &d->ahci.mem);
 
-    sata_cap_offset = pci_add_capability(&d->card, PCI_CAP_ID_SATA,
+    sata_cap_offset = pci_add_capability(dev, PCI_CAP_ID_SATA,
                                          ICH9_SATA_CAP_OFFSET, SATA_CAP_SIZE);
     if (sata_cap_offset < 0) {
         return sata_cap_offset;
     }
 
-    sata_cap = d->card.config + sata_cap_offset;
+    sata_cap = dev->config + sata_cap_offset;
     pci_set_word(sata_cap + SATA_CAP_REV, 0x10);
     pci_set_long(sata_cap + SATA_CAP_BAR,
                  (ICH9_IDP_BAR + 0x4) | (ICH9_IDP_INDEX_LOG2 << 4));
@@ -127,45 +138,42 @@ static int pci_ich9_ahci_init(PCIDevice *dev)
     return 0;
 }
 
-static int pci_ich9_uninit(PCIDevice *dev)
+static void pci_ich9_uninit(PCIDevice *dev)
 {
     struct AHCIPCIState *d;
-    d = DO_UPCAST(struct AHCIPCIState, card, dev);
+    d = ICH_AHCI(dev);
 
     msi_uninit(dev);
-    qemu_unregister_reset(ahci_reset, d);
     ahci_uninit(&d->ahci);
-
-    return 0;
+    qemu_free_irq(d->ahci.irq);
 }
 
-static void pci_ich9_write_config(PCIDevice *pci, uint32_t addr,
-                                  uint32_t val, int len)
+static void ich_ahci_class_init(ObjectClass *klass, void *data)
 {
-    pci_default_write_config(pci, addr, val, len);
-    msi_write_config(pci, addr, val, len);
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
+
+    k->init = pci_ich9_ahci_init;
+    k->exit = pci_ich9_uninit;
+    k->vendor_id = PCI_VENDOR_ID_INTEL;
+    k->device_id = PCI_DEVICE_ID_INTEL_82801IR;
+    k->revision = 0x02;
+    k->class_id = PCI_CLASS_STORAGE_SATA;
+    dc->vmsd = &vmstate_ich9_ahci;
+    dc->reset = pci_ich9_reset;
+    set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }
 
-static PCIDeviceInfo ich_ahci_info[] = {
-    {
-        .qdev.name    = "ich9-ahci",
-        .qdev.alias   = "ahci",
-        .qdev.size    = sizeof(AHCIPCIState),
-        .qdev.vmsd    = &vmstate_ahci,
-        .init         = pci_ich9_ahci_init,
-        .exit         = pci_ich9_uninit,
-        .config_write = pci_ich9_write_config,
-        .vendor_id    = PCI_VENDOR_ID_INTEL,
-        .device_id    = PCI_DEVICE_ID_INTEL_82801IR,
-        .revision     = 0x02,
-        .class_id     = PCI_CLASS_STORAGE_SATA,
-    },{
-        /* end of list */
-    }
+static const TypeInfo ich_ahci_info = {
+    .name          = TYPE_ICH9_AHCI,
+    .parent        = TYPE_PCI_DEVICE,
+    .instance_size = sizeof(AHCIPCIState),
+    .class_init    = ich_ahci_class_init,
 };
 
-static void ich_ahci_register(void)
+static void ich_ahci_register_types(void)
 {
-    pci_qdev_register_many(ich_ahci_info);
+    type_register_static(&ich_ahci_info);
 }
-device_init(ich_ahci_register);
+
+type_init(ich_ahci_register_types)

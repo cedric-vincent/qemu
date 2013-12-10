@@ -22,9 +22,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-#include <hw/hw.h>
-#include "block.h"
-#include "dma.h"
+#include "hw/hw.h"
+#include "hw/sysbus.h"
+#include "block/block.h"
+#include "sysemu/dma.h"
 
 #include <hw/ide/internal.h>
 
@@ -34,19 +35,30 @@
  * dedicated ide controller, which is often seen on embedded boards.
  */
 
-typedef struct {
+#define TYPE_MMIO_IDE "mmio-ide"
+#define MMIO_IDE(obj) OBJECT_CHECK(MMIOState, (obj), TYPE_MMIO_IDE)
+
+typedef struct MMIOIDEState {
+    /*< private >*/
+    SysBusDevice parent_obj;
+    /*< public >*/
+
     IDEBus bus;
-    int shift;
+
+    uint32_t shift;
+    qemu_irq irq;
+    MemoryRegion iomem1, iomem2;
 } MMIOState;
 
-static void mmio_ide_reset(void *opaque)
+static void mmio_ide_reset(DeviceState *dev)
 {
-    MMIOState *s = opaque;
+    MMIOState *s = MMIO_IDE(dev);
 
     ide_bus_reset(&s->bus);
 }
 
-static uint32_t mmio_ide_read (void *opaque, target_phys_addr_t addr)
+static uint64_t mmio_ide_read(void *opaque, hwaddr addr,
+                              unsigned size)
 {
     MMIOState *s = opaque;
     addr >>= s->shift;
@@ -56,8 +68,8 @@ static uint32_t mmio_ide_read (void *opaque, target_phys_addr_t addr)
         return ide_data_readw(&s->bus, 0);
 }
 
-static void mmio_ide_write (void *opaque, target_phys_addr_t addr,
-	uint32_t val)
+static void mmio_ide_write(void *opaque, hwaddr addr,
+                           uint64_t val, unsigned size)
 {
     MMIOState *s = opaque;
     addr >>= s->shift;
@@ -67,41 +79,30 @@ static void mmio_ide_write (void *opaque, target_phys_addr_t addr,
         ide_data_writew(&s->bus, 0, val);
 }
 
-static CPUReadMemoryFunc * const mmio_ide_reads[] = {
-    mmio_ide_read,
-    mmio_ide_read,
-    mmio_ide_read,
+static const MemoryRegionOps mmio_ide_ops = {
+    .read = mmio_ide_read,
+    .write = mmio_ide_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
-static CPUWriteMemoryFunc * const mmio_ide_writes[] = {
-    mmio_ide_write,
-    mmio_ide_write,
-    mmio_ide_write,
-};
-
-static uint32_t mmio_ide_status_read (void *opaque, target_phys_addr_t addr)
+static uint64_t mmio_ide_status_read(void *opaque, hwaddr addr,
+                                     unsigned size)
 {
     MMIOState *s= opaque;
     return ide_status_read(&s->bus, 0);
 }
 
-static void mmio_ide_cmd_write (void *opaque, target_phys_addr_t addr,
-	uint32_t val)
+static void mmio_ide_cmd_write(void *opaque, hwaddr addr,
+                               uint64_t val, unsigned size)
 {
     MMIOState *s = opaque;
     ide_cmd_write(&s->bus, 0, val);
 }
 
-static CPUReadMemoryFunc * const mmio_ide_status[] = {
-    mmio_ide_status_read,
-    mmio_ide_status_read,
-    mmio_ide_status_read,
-};
-
-static CPUWriteMemoryFunc * const mmio_ide_cmd[] = {
-    mmio_ide_cmd_write,
-    mmio_ide_cmd_write,
-    mmio_ide_cmd_write,
+static const MemoryRegionOps mmio_ide_cs_ops = {
+    .read = mmio_ide_status_read,
+    .write = mmio_ide_cmd_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
 static const VMStateDescription vmstate_ide_mmio = {
@@ -116,24 +117,68 @@ static const VMStateDescription vmstate_ide_mmio = {
     }
 };
 
-void mmio_ide_init (target_phys_addr_t membase, target_phys_addr_t membase2,
-                    qemu_irq irq, int shift,
-                    DriveInfo *hd0, DriveInfo *hd1)
+static void mmio_ide_realizefn(DeviceState *dev, Error **errp)
 {
-    MMIOState *s = g_malloc0(sizeof(MMIOState));
-    int mem1, mem2;
+    SysBusDevice *d = SYS_BUS_DEVICE(dev);
+    MMIOState *s = MMIO_IDE(dev);
 
-    ide_init2_with_non_qdev_drives(&s->bus, hd0, hd1, irq);
+    ide_init2(&s->bus, s->irq);
 
-    s->shift = shift;
-
-    mem1 = cpu_register_io_memory(mmio_ide_reads, mmio_ide_writes, s,
-                                  DEVICE_NATIVE_ENDIAN);
-    mem2 = cpu_register_io_memory(mmio_ide_status, mmio_ide_cmd, s,
-                                  DEVICE_NATIVE_ENDIAN);
-    cpu_register_physical_memory(membase, 16 << shift, mem1);
-    cpu_register_physical_memory(membase2, 2 << shift, mem2);
-    vmstate_register(NULL, 0, &vmstate_ide_mmio, s);
-    qemu_register_reset(mmio_ide_reset, s);
+    memory_region_init_io(&s->iomem1, OBJECT(s), &mmio_ide_ops, s,
+                          "ide-mmio.1", 16 << s->shift);
+    memory_region_init_io(&s->iomem2, OBJECT(s), &mmio_ide_cs_ops, s,
+                          "ide-mmio.2", 2 << s->shift);
+    sysbus_init_mmio(d, &s->iomem1);
+    sysbus_init_mmio(d, &s->iomem2);
 }
 
+static void mmio_ide_initfn(Object *obj)
+{
+    SysBusDevice *d = SYS_BUS_DEVICE(obj);
+    MMIOState *s = MMIO_IDE(obj);
+
+    ide_bus_new(&s->bus, sizeof(s->bus), DEVICE(obj), 0, 2);
+    sysbus_init_irq(d, &s->irq);
+}
+
+static Property mmio_ide_properties[] = {
+    DEFINE_PROP_UINT32("shift", MMIOState, shift, 0),
+    DEFINE_PROP_END_OF_LIST()
+};
+
+static void mmio_ide_class_init(ObjectClass *oc, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+
+    dc->realize = mmio_ide_realizefn;
+    dc->reset = mmio_ide_reset;
+    dc->props = mmio_ide_properties;
+    dc->vmsd = &vmstate_ide_mmio;
+}
+
+static const TypeInfo mmio_ide_type_info = {
+    .name = TYPE_MMIO_IDE,
+    .parent = TYPE_SYS_BUS_DEVICE,
+    .instance_size = sizeof(MMIOState),
+    .instance_init = mmio_ide_initfn,
+    .class_init = mmio_ide_class_init,
+};
+
+static void mmio_ide_register_types(void)
+{
+    type_register_static(&mmio_ide_type_info);
+}
+
+void mmio_ide_init_drives(DeviceState *dev, DriveInfo *hd0, DriveInfo *hd1)
+{
+    MMIOState *s = MMIO_IDE(dev);
+
+    if (hd0 != NULL) {
+        ide_create_drive(&s->bus, 0, hd0);
+    }
+    if (hd1 != NULL) {
+        ide_create_drive(&s->bus, 1, hd1);
+    }
+}
+
+type_init(mmio_ide_register_types)

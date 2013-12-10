@@ -11,7 +11,7 @@
  *
  */
 
-#include "hw/virtio.h"
+#include "hw/virtio/virtio.h"
 #include "virtio-9p.h"
 #include "virtio-9p-xattr.h"
 #include <arpa/inet.h>
@@ -19,7 +19,7 @@
 #include <grp.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-#include "qemu-xattr.h"
+#include "qemu/xattr.h"
 #include <unistd.h>
 #include <linux/fs.h>
 #ifdef CONFIG_LINUX_MAGIC_H
@@ -59,15 +59,15 @@ static inline int open_by_handle(int mountfd, const char *fh, int flags)
 static int handle_update_file_cred(int dirfd, const char *name, FsCred *credp)
 {
     int fd, ret;
-    fd = openat(dirfd, name, O_NONBLOCK | O_NOFOLLOW);;
+    fd = openat(dirfd, name, O_NONBLOCK | O_NOFOLLOW);
     if (fd < 0) {
         return fd;
     }
-    ret = fchmod(fd, credp->fc_mode & 07777);
+    ret = fchownat(fd, "", credp->fc_uid, credp->fc_gid, AT_EMPTY_PATH);
     if (ret < 0) {
         goto err_out;
     }
-    ret = fchownat(fd, "", credp->fc_uid, credp->fc_gid, AT_EMPTY_PATH);
+    ret = fchmod(fd, credp->fc_mode & 07777);
 err_out:
     close(fd);
     return ret;
@@ -520,7 +520,7 @@ static int handle_name_to_path(FsContext *ctx, V9fsPath *dir_path,
     }
     fh = g_malloc(sizeof(struct file_handle) + data->handle_bytes);
     fh->handle_bytes = data->handle_bytes;
-    /* add a "./" at the begining of the path */
+    /* add a "./" at the beginning of the path */
     snprintf(buffer, PATH_MAX, "./%s", name);
     /* flag = 0 imply don't follow symlink */
     ret = name_to_handle(dirfd, buffer, fh, &mnt_id, 0);
@@ -641,7 +641,27 @@ out:
     return ret;
 }
 
+static int handle_parse_opts(QemuOpts *opts, struct FsDriverEntry *fse)
+{
+    const char *sec_model = qemu_opt_get(opts, "security_model");
+    const char *path = qemu_opt_get(opts, "path");
+
+    if (sec_model) {
+        fprintf(stderr, "Invalid argument security_model specified with handle fsdriver\n");
+        return -1;
+    }
+
+    if (!path) {
+        fprintf(stderr, "fsdev: No path specified.\n");
+        return -1;
+    }
+    fse->path = g_strdup(path);
+    return 0;
+
+}
+
 FileOperations handle_ops = {
+    .parse_opts   = handle_parse_opts,
     .init         = handle_init,
     .lstat        = handle_lstat,
     .readlink     = handle_readlink,

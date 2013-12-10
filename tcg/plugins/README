@@ -274,7 +274,7 @@ This function is called after a TCG opcode is emitted, and it is
 mainly used to insert TCG opcodes or calls to helpers.  Its
 declaration is::
 
-    void after_gen_opc(TCGOpcode opname, uint16_t *opcode, TCGArg *opargs, uint8_t nb_args);
+    void after_gen_opc(uint16_t *opcode, TCGArg *opargs, uint8_t nb_args);
 
 
 
@@ -571,9 +571,9 @@ To explain how to do this, we will take a simple example::
 First create a C header file -- let's say ``example-helper.h`` -- with
 the following content::
 
-    #include "def-helper.h"
+    #include "exec/def-helper.h"
     DEF_HELPER_1(example, void, i64)
-    #include "def-helper.h"
+    #include "exec/def-helper.h"
 
 Then, add the following code at the beginning of your plugin's
 source::
@@ -633,7 +633,7 @@ explained in a previous section::
     #include <inttypes.h>
 
     #include "tcg-plugin.h"
-    #include "disas.h"
+    #include "disas/disas.h"
 
     static void pre_tb_helper_code(const TCGPluginInterface *tpi,
                                TPIHelperInfo info, uint64_t address,

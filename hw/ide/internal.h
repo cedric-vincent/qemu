@@ -7,11 +7,11 @@
  * non-internal declarations are in hw/ide.h
  */
 #include <hw/ide.h>
-#include <hw/isa.h>
-#include "iorange.h"
-#include "dma.h"
-#include "sysemu.h"
-#include "hw/scsi-defs.h"
+#include <hw/isa/isa.h>
+#include "sysemu/dma.h"
+#include "sysemu/sysemu.h"
+#include "hw/block/block.h"
+#include "block/scsi.h"
 
 /* debug IDE devices */
 //#define DEBUG_IDE
@@ -21,10 +21,12 @@
 
 typedef struct IDEBus IDEBus;
 typedef struct IDEDevice IDEDevice;
-typedef struct IDEDeviceInfo IDEDeviceInfo;
 typedef struct IDEState IDEState;
 typedef struct IDEDMA IDEDMA;
 typedef struct IDEDMAOps IDEDMAOps;
+
+#define TYPE_IDE_BUS "IDE"
+#define IDE_BUS(obj) OBJECT_CHECK(IDEBus, (obj), TYPE_IDE_BUS)
 
 /* Bits of HD_STATUS */
 #define ERR_STAT		0x01
@@ -342,13 +344,15 @@ struct IDEState {
     uint8_t unit;
     /* ide config */
     IDEDriveKind drive_kind;
-    int cylinders, heads, sectors;
+    int cylinders, heads, sectors, chs_trans;
     int64_t nb_sectors;
     int mult_sectors;
     int identify_set;
     uint8_t identify_data[512];
     int drive_serial;
     char drive_serial_str[21];
+    char drive_model_str[41];
+    uint64_t wwn;
     /* ide regs */
     uint8_t feature;
     uint8_t error;
@@ -384,7 +388,11 @@ struct IDEState {
     int cd_sector_size;
     int atapi_dma; /* true if dma is requested for the packet cmd */
     BlockAcctCookie acct;
+    BlockDriverAIOCB *pio_aiocb;
+    struct iovec iov;
+    QEMUIOVector qiov;
     /* ATA DMA state */
+    int io_buffer_offset;
     int io_buffer_size;
     QEMUSGList sg;
     /* PIO transfer handling */
@@ -425,6 +433,7 @@ struct IDEDMAOps {
     DMAIntFunc *set_unit;
     DMAIntFunc *add_status;
     DMAFunc *set_inactive;
+    DMAFunc *async_cmd_done;
     DMARestartFunc *restart_cb;
     DMAFunc *reset;
 };
@@ -442,6 +451,7 @@ struct IDEBus {
     IDEDevice *slave;
     IDEState ifs[2];
     int bus_id;
+    int max_units;
     IDEDMA *dma;
     uint8_t unit;
     uint8_t cmd;
@@ -450,18 +460,28 @@ struct IDEBus {
     int error_status;
 };
 
+#define TYPE_IDE_DEVICE "ide-device"
+#define IDE_DEVICE(obj) \
+     OBJECT_CHECK(IDEDevice, (obj), TYPE_IDE_DEVICE)
+#define IDE_DEVICE_CLASS(klass) \
+     OBJECT_CLASS_CHECK(IDEDeviceClass, (klass), TYPE_IDE_DEVICE)
+#define IDE_DEVICE_GET_CLASS(obj) \
+     OBJECT_GET_CLASS(IDEDeviceClass, (obj), TYPE_IDE_DEVICE)
+
+typedef struct IDEDeviceClass {
+    DeviceClass parent_class;
+    int (*init)(IDEDevice *dev);
+} IDEDeviceClass;
+
 struct IDEDevice {
     DeviceState qdev;
     uint32_t unit;
     BlockConf conf;
+    int chs_trans;
     char *version;
     char *serial;
-};
-
-typedef int (*ide_qdev_initfn)(IDEDevice *dev);
-struct IDEDeviceInfo {
-    DeviceInfo qdev;
-    ide_qdev_initfn init;
+    char *model;
+    uint64_t wwn;
 };
 
 #define BM_STATUS_DMAING 0x01
@@ -528,10 +548,11 @@ void ide_data_writel(void *opaque, uint32_t addr, uint32_t val);
 uint32_t ide_data_readl(void *opaque, uint32_t addr);
 
 int ide_init_drive(IDEState *s, BlockDriverState *bs, IDEDriveKind kind,
-                   const char *version, const char *serial);
+                   const char *version, const char *serial, const char *model,
+                   uint64_t wwn,
+                   uint32_t cylinders, uint32_t heads, uint32_t secs,
+                   int chs_trans);
 void ide_init2(IDEBus *bus, qemu_irq irq);
-void ide_init2_with_non_qdev_drives(IDEBus *bus, DriveInfo *hd0,
-                                    DriveInfo *hd1, qemu_irq irq);
 void ide_init_ioport(IDEBus *bus, ISADevice *isa, int iobase, int iobase2);
 
 void ide_exec_cmd(IDEBus *bus, uint32_t val);
@@ -553,7 +574,8 @@ void ide_atapi_cmd(IDEState *s);
 void ide_atapi_cmd_reply_end(IDEState *s);
 
 /* hw/ide/qdev.c */
-void ide_bus_new(IDEBus *idebus, DeviceState *dev, int bus_id);
+void ide_bus_new(IDEBus *idebus, size_t idebus_size, DeviceState *dev,
+                 int bus_id, int max_units);
 IDEDevice *ide_create_drive(IDEBus *bus, int unit, DriveInfo *drive);
 
 #endif /* HW_IDE_INTERNAL_H */

@@ -42,7 +42,7 @@ def generate_command_decl(name, args, ret_type):
     return mcgen('''
 %(ret_type)s qmp_%(name)s(%(args)sError **errp);
 ''',
-                 ret_type=c_type(ret_type), name=c_var(name), args=arglist).strip()
+                 ret_type=c_type(ret_type), name=c_fun(name), args=arglist).strip()
 
 def gen_sync_call(name, args, ret_type, indent=0):
     ret = ""
@@ -59,7 +59,7 @@ def gen_sync_call(name, args, ret_type, indent=0):
 %(retval)sqmp_%(name)s(%(args)serrp);
 
 ''',
-                name=c_var(name), args=arglist, retval=retval).rstrip()
+                name=c_fun(name), args=arglist, retval=retval).rstrip()
     if ret_type:
         ret += "\n" + mcgen(''''
 if (!error_is_set(errp)) {
@@ -74,7 +74,7 @@ if (!error_is_set(errp)) {
 def gen_marshal_output_call(name, ret_type):
     if not ret_type:
         return ""
-    return "qmp_marshal_output_%s(retval, ret, errp);" % c_var(name)
+    return "qmp_marshal_output_%s(retval, ret, errp);" % c_fun(name)
 
 def gen_visitor_output_containers_decl(ret_type):
     ret = ""
@@ -128,19 +128,22 @@ bool has_%(argname)s = false;
 
 def gen_visitor_input_block(args, obj, dealloc=False):
     ret = ""
+    errparg = 'errp'
+
     if len(args) == 0:
         return ret
 
     push_indent()
 
     if dealloc:
+        errparg = 'NULL'
         ret += mcgen('''
 md = qapi_dealloc_visitor_new();
 v = qapi_dealloc_get_visitor(md);
 ''')
     else:
         ret += mcgen('''
-mi = qmp_input_visitor_new(%(obj)s);
+mi = qmp_input_visitor_new_strict(%(obj)s);
 v = qmp_input_get_visitor(mi);
 ''',
                      obj=obj)
@@ -148,22 +151,22 @@ v = qmp_input_get_visitor(mi);
     for argname, argtype, optional, structured in parse_args(args):
         if optional:
             ret += mcgen('''
-visit_start_optional(v, &has_%(c_name)s, "%(name)s", errp);
+visit_start_optional(v, &has_%(c_name)s, "%(name)s", %(errp)s);
 if (has_%(c_name)s) {
 ''',
-                         c_name=c_var(argname), name=argname)
+                         c_name=c_var(argname), name=argname, errp=errparg)
             push_indent()
         ret += mcgen('''
-%(visitor)s(v, &%(c_name)s, "%(name)s", errp);
+%(visitor)s(v, &%(c_name)s, "%(name)s", %(errp)s);
 ''',
                      c_name=c_var(argname), name=argname, argtype=argtype,
-                     visitor=type_visitor(argtype))
+                     visitor=type_visitor(argtype), errp=errparg)
         if optional:
             pop_indent()
             ret += mcgen('''
 }
-visit_end_optional(v, errp);
-''')
+visit_end_optional(v, %(errp)s);
+''', errp=errparg)
 
     if dealloc:
         ret += mcgen('''
@@ -194,20 +197,20 @@ static void qmp_marshal_output_%(c_name)s(%(c_ret_type)s ret_in, QObject **ret_o
     }
     qmp_output_visitor_cleanup(mo);
     v = qapi_dealloc_get_visitor(md);
-    %(visitor)s(v, &ret_in, "unused", errp);
+    %(visitor)s(v, &ret_in, "unused", NULL);
     qapi_dealloc_visitor_cleanup(md);
 }
 ''',
-                c_ret_type=c_type(ret_type), c_name=c_var(name),
+                c_ret_type=c_type(ret_type), c_name=c_fun(name),
                 visitor=type_visitor(ret_type))
 
     return ret
 
 def gen_marshal_input_decl(name, args, ret_type, middle_mode):
     if middle_mode:
-        return 'int qmp_marshal_input_%s(Monitor *mon, const QDict *qdict, QObject **ret)' % c_var(name)
+        return 'int qmp_marshal_input_%s(Monitor *mon, const QDict *qdict, QObject **ret)' % c_fun(name)
     else:
-        return 'static void qmp_marshal_input_%s(QDict *args, QObject **ret, Error **errp)' % c_var(name)
+        return 'static void qmp_marshal_input_%s(QDict *args, QObject **ret, Error **errp)' % c_fun(name)
 
 
 
@@ -291,14 +294,24 @@ out:
 
     return ret
 
+def option_value_matches(opt, val, cmd):
+    if opt in cmd and cmd[opt] == val:
+        return True
+    return False
+
 def gen_registry(commands):
     registry=""
     push_indent()
     for cmd in commands:
+        options = 'QCO_NO_OPTIONS'
+        if option_value_matches('success-response', 'no', cmd):
+            options = 'QCO_NO_SUCCESS_RESP'
+
         registry += mcgen('''
-qmp_register_command("%(name)s", qmp_marshal_input_%(c_name)s);
+qmp_register_command("%(name)s", qmp_marshal_input_%(c_name)s, %(opts)s);
 ''',
-                     name=cmd['command'], c_name=c_var(cmd['command']))
+                     name=cmd['command'], c_name=c_fun(cmd['command']),
+                     opts=options)
     pop_indent()
     ret = mcgen('''
 static void qmp_init_marshal(void)
@@ -332,7 +345,8 @@ def gen_command_decl_prologue(header, guard, prefix=""):
 #define %(guard)s
 
 #include "%(prefix)sqapi-types.h"
-#include "error.h"
+#include "qapi/qmp/qdict.h"
+#include "qapi/error.h"
 
 ''',
                  header=basename(header), guard=guardname(header), prefix=prefix)
@@ -355,12 +369,15 @@ def gen_command_def_prologue(prefix="", proxy=False):
  *
  */
 
-#include "qemu-objects.h"
-#include "qapi/qmp-core.h"
-#include "qapi/qapi-visit-core.h"
+#include "qemu-common.h"
+#include "qemu/module.h"
+#include "qapi/qmp/qerror.h"
+#include "qapi/qmp/types.h"
+#include "qapi/qmp/dispatch.h"
+#include "qapi/visitor.h"
 #include "qapi/qmp-output-visitor.h"
 #include "qapi/qmp-input-visitor.h"
-#include "qapi/qapi-dealloc-visitor.h"
+#include "qapi/dealloc-visitor.h"
 #include "%(prefix)sqapi-types.h"
 #include "%(prefix)sqapi-visit.h"
 
@@ -372,7 +389,9 @@ def gen_command_def_prologue(prefix="", proxy=False):
 
 
 try:
-    opts, args = getopt.gnu_getopt(sys.argv[1:], "p:o:m", ["prefix=", "output-dir=", "type=", "middle"])
+    opts, args = getopt.gnu_getopt(sys.argv[1:], "chp:o:m",
+                                   ["source", "header", "prefix=",
+                                    "output-dir=", "type=", "middle"])
 except getopt.GetoptError, err:
     print str(err)
     sys.exit(1)
@@ -384,6 +403,9 @@ c_file = 'qmp-marshal.c'
 h_file = 'qmp-commands.h'
 middle_mode = False
 
+do_c = False
+do_h = False
+
 for o, a in opts:
     if o in ("-p", "--prefix"):
         prefix = a
@@ -393,9 +415,24 @@ for o, a in opts:
         dispatch_type = a
     elif o in ("-m", "--middle"):
         middle_mode = True
+    elif o in ("-c", "--source"):
+        do_c = True
+    elif o in ("-h", "--header"):
+        do_h = True
+
+if not do_c and not do_h:
+    do_c = True
+    do_h = True
 
 c_file = output_dir + prefix + c_file
 h_file = output_dir + prefix + h_file
+
+def maybe_open(really, name, opt):
+    if really:
+        return open(name, opt)
+    else:
+        import StringIO
+        return StringIO.StringIO()
 
 try:
     os.makedirs(output_dir)
@@ -405,10 +442,11 @@ except os.error, e:
 
 exprs = parse_schema(sys.stdin)
 commands = filter(lambda expr: expr.has_key('command'), exprs)
+commands = filter(lambda expr: not expr.has_key('gen'), commands)
 
 if dispatch_type == "sync":
-    fdecl = open(h_file, 'w')
-    fdef = open(c_file, 'w')
+    fdecl = maybe_open(do_h, h_file, 'w')
+    fdef = maybe_open(do_c, c_file, 'w')
     ret = gen_command_decl_prologue(header=basename(h_file), guard=guardname(h_file), prefix=prefix)
     fdecl.write(ret)
     ret = gen_command_def_prologue(prefix=prefix)

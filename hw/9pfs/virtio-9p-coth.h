@@ -15,8 +15,8 @@
 #ifndef _QEMU_VIRTIO_9P_COTH_H
 #define _QEMU_VIRTIO_9P_COTH_H
 
-#include "qemu-thread.h"
-#include "qemu-coroutine.h"
+#include "qemu/thread.h"
+#include "block/coroutine.h"
 #include "virtio-9p.h"
 #include <glib.h>
 
@@ -44,7 +44,7 @@ typedef struct V9fsThPool {
                             qemu_coroutine_self());                     \
         qemu_bh_schedule(co_bh);                                        \
         /*                                                              \
-         * yeild in qemu thread and re-enter back                       \
+         * yield in qemu thread and re-enter back                       \
          * in glib worker thread                                        \
          */                                                             \
         qemu_coroutine_yield();                                         \

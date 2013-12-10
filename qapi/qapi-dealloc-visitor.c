@@ -11,10 +11,11 @@
  *
  */
 
-#include "qapi-dealloc-visitor.h"
-#include "qemu-queue.h"
+#include "qapi/dealloc-visitor.h"
+#include "qemu/queue.h"
 #include "qemu-common.h"
-#include "qemu-objects.h"
+#include "qapi/qmp/types.h"
+#include "qapi/visitor-impl.h"
 
 typedef struct StackEntry
 {
@@ -67,6 +68,24 @@ static void qapi_dealloc_start_struct(Visitor *v, void **obj, const char *kind,
 }
 
 static void qapi_dealloc_end_struct(Visitor *v, Error **errp)
+{
+    QapiDeallocVisitor *qov = to_qov(v);
+    void **obj = qapi_dealloc_pop(qov);
+    if (obj) {
+        g_free(*obj);
+    }
+}
+
+static void qapi_dealloc_start_implicit_struct(Visitor *v,
+                                               void **obj,
+                                               size_t size,
+                                               Error **errp)
+{
+    QapiDeallocVisitor *qov = to_qov(v);
+    qapi_dealloc_push(qov, obj);
+}
+
+static void qapi_dealloc_end_implicit_struct(Visitor *v, Error **errp)
 {
     QapiDeallocVisitor *qov = to_qov(v);
     void **obj = qapi_dealloc_pop(qov);
@@ -132,6 +151,11 @@ static void qapi_dealloc_type_number(Visitor *v, double *obj, const char *name,
 {
 }
 
+static void qapi_dealloc_type_size(Visitor *v, uint64_t *obj, const char *name,
+                                   Error **errp)
+{
+}
+
 static void qapi_dealloc_type_enum(Visitor *v, int *obj, const char *strings[],
                                    const char *kind, const char *name,
                                    Error **errp)
@@ -156,6 +180,8 @@ QapiDeallocVisitor *qapi_dealloc_visitor_new(void)
 
     v->visitor.start_struct = qapi_dealloc_start_struct;
     v->visitor.end_struct = qapi_dealloc_end_struct;
+    v->visitor.start_implicit_struct = qapi_dealloc_start_implicit_struct;
+    v->visitor.end_implicit_struct = qapi_dealloc_end_implicit_struct;
     v->visitor.start_list = qapi_dealloc_start_list;
     v->visitor.next_list = qapi_dealloc_next_list;
     v->visitor.end_list = qapi_dealloc_end_list;
@@ -164,6 +190,7 @@ QapiDeallocVisitor *qapi_dealloc_visitor_new(void)
     v->visitor.type_bool = qapi_dealloc_type_bool;
     v->visitor.type_str = qapi_dealloc_type_str;
     v->visitor.type_number = qapi_dealloc_type_number;
+    v->visitor.type_size = qapi_dealloc_type_size;
 
     QTAILQ_INIT(&v->stack);
 

@@ -15,7 +15,7 @@
 #ifndef BLOCK_QED_H
 #define BLOCK_QED_H
 
-#include "block_int.h"
+#include "block/block_int.h"
 
 /* The layout of a QED file is as follows:
  *
@@ -100,7 +100,7 @@ typedef struct {
     /* if (features & QED_F_BACKING_FILE) */
     uint32_t backing_filename_offset; /* in bytes from start of header */
     uint32_t backing_filename_size;   /* in bytes */
-} QEDHeader;
+} QEMU_PACKED QEDHeader;
 
 typedef struct {
     uint64_t offsets[0];            /* in bytes */
@@ -123,12 +123,17 @@ typedef struct QEDRequest {
     CachedL2Table *l2_table;
 } QEDRequest;
 
+enum {
+    QED_AIOCB_WRITE = 0x0001,       /* read or write? */
+    QED_AIOCB_ZERO  = 0x0002,       /* zero write, used with QED_AIOCB_WRITE */
+};
+
 typedef struct QEDAIOCB {
     BlockDriverAIOCB common;
     QEMUBH *bh;
     int bh_ret;                     /* final return status for completion bh */
     QSIMPLEQ_ENTRY(QEDAIOCB) next;  /* next request */
-    bool is_write;                  /* false - read, true - write */
+    int flags;                      /* QED_AIOCB_* bits ORed together */
     bool *finished;                 /* signal for cancel completion */
     uint64_t end_pos;               /* request end on block device, in bytes */
 
@@ -164,8 +169,6 @@ typedef struct {
 
     /* Periodic flush and clear need check flag */
     QEMUTimer *need_check_timer;
-
-    Error *migration_blocker;
 } BDRVQEDState;
 
 enum {
@@ -206,6 +209,11 @@ typedef struct {
 
 void *gencb_alloc(size_t len, BlockDriverCompletionFunc *cb, void *opaque);
 void gencb_complete(void *opaque, int ret);
+
+/**
+ * Header functions
+ */
+int qed_write_header_sync(BDRVQEDState *s);
 
 /**
  * L2 cache functions

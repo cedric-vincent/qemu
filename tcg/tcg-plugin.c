@@ -37,13 +37,14 @@
 #include "tcg-op.h"
 
 /* Define helper.  */
-#include "tcg-plugin-helper.h"
+#include "helper.h"
 #define GEN_HELPER 1
-#include "tcg-plugin-helper.h"
+#include "helper.h"
 
 #include "tcg-plugin.h"
-#include "exec-all.h"   /* CPUState, TranslationBlock */
-#include "sysemu.h"     /* max_cpus */
+#include "exec/exec-all.h"   /* TranslationBlock */
+#include "qom/cpu.h"         /* CPUState */
+#include "sysemu/sysemu.h"   /* max_cpus */
 
 /* Interface for the TCG plugin.  */
 static TCGPluginInterface tpi;
@@ -72,7 +73,7 @@ void tcg_plugin_load(const char *name)
 
     /* Check if "name" refers to an installed plugin (short form).  */
     if (name[0] != '.' && name[0] != '/') {
-        const char *format = CONFIG_QEMU_LIBEXECDIR "/" TARGET_ARCH
+        const char *format = CONFIG_QEMU_LIBEXECDIR "/" TARGET_NAME
             "/" EMULATION_MODE "/tcg-plugin-%s.so";
         size_t size = strlen(format) + strlen(name);
         int status;
@@ -222,10 +223,10 @@ void tcg_plugin_load(const char *name)
         goto error;
     }
 
-    if (strcmp(tpi.guest, TARGET_ARCH) != 0
+    if (strcmp(tpi.guest, TARGET_NAME) != 0
         && strcmp(tpi.guest, "any") != 0) {
         fprintf(stderr, "plugin: warning: incompatible guest CPU "
-                "(%s != %s)\n", tpi.guest, TARGET_ARCH);
+                "(%s != %s)\n", tpi.guest, TARGET_NAME);
     }
 
     if (strcmp(tpi.mode, EMULATION_MODE) != 0
@@ -254,10 +255,6 @@ void tcg_plugin_load(const char *name)
         fprintf(tpi.output, "plugin: info: pre_tb_helper_data callback = %p\n", tpi.pre_tb_helper_data);
         fprintf(tpi.output, "plugin: info: is%s generic\n", tpi.is_generic ? "" : " not");
     }
-
-    /* Register helper.  */
-#define GEN_HELPER 2
-#include "tcg-plugin-helper.h"
 
     done = true;
 
@@ -321,15 +318,15 @@ void tcg_plugin_before_gen_tb(CPUState *env, TranslationBlock *tb)
         TCGv_i64 address = tcg_const_i64((uint64_t)tb->pc);
 
         /* Patched in tcg_plugin_after_gen_tb().  */
-        tb_info = gen_opparam_ptr + 1;
+        tb_info = tcg_ctx.gen_opparam_ptr + 1;
         TCGv_i64 info = tcg_const_i64(0);
 
         /* Patched in tcg_plugin_after_gen_tb().  */
-        tb_data1 = gen_opparam_ptr + 1;
+        tb_data1 = tcg_ctx.gen_opparam_ptr + 1;
         data1 = tcg_const_i64(0);
 
         /* Patched in tcg_plugin_after_gen_tb().  */
-        tb_data2 = gen_opparam_ptr + 1;
+        tb_data2 = tcg_ctx.gen_opparam_ptr + 1;
         data2 = tcg_const_i64(0);
 
         gen_helper_tcg_plugin_pre_tb(address, info, data1, data2);
@@ -413,8 +410,7 @@ void tcg_plugin_register_info(uint64_t pc, CPUState *env, TranslationBlock *tb)
 }
 
 /* Hook called each time a TCG opcode is generated.  */
-void tcg_plugin_after_gen_opc(TCGOpcode opname, uint16_t *opcode,
-                              TCGArg *opargs, uint8_t nb_args)
+void tcg_plugin_after_gen_opc(uint16_t *opcode, TCGArg *opargs, uint8_t nb_args)
 {
     TPIOpCode tpi_opcode;
 
@@ -429,7 +425,6 @@ void tcg_plugin_after_gen_opc(TCGOpcode opname, uint16_t *opcode,
 
     nb_args = MIN(nb_args, TPI_MAX_OP_ARGS);
 
-    tpi_opcode.name = opname;
     tpi_opcode.pc   = current_pc;
     tpi_opcode.nb_args = nb_args;
 

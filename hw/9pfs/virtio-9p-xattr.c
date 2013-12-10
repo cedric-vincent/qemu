@@ -11,7 +11,7 @@
  *
  */
 
-#include "hw/virtio.h"
+#include "hw/virtio/virtio.h"
 #include "virtio-9p.h"
 #include "fsdev/file-op-9p.h"
 #include "virtio-9p-xattr.h"
@@ -36,7 +36,7 @@ ssize_t v9fs_get_xattr(FsContext *ctx, const char *path,
     if (xops) {
         return xops->getxattr(ctx, path, name, value, size);
     }
-    errno = -EOPNOTSUPP;
+    errno = EOPNOTSUPP;
     return -1;
 }
 
@@ -53,7 +53,8 @@ ssize_t pt_listxattr(FsContext *ctx, const char *path,
         return -1;
     }
 
-    strncpy(value, name, name_size);
+    /* no need for strncpy: name_size is strlen(name)+1 */
+    memcpy(value, name, name_size);
     return name_size;
 }
 
@@ -122,7 +123,7 @@ int v9fs_set_xattr(FsContext *ctx, const char *path, const char *name,
     if (xops) {
         return xops->setxattr(ctx, path, name, value, size, flags);
     }
-    errno = -EOPNOTSUPP;
+    errno = EOPNOTSUPP;
     return -1;
 
 }
@@ -134,7 +135,7 @@ int v9fs_remove_xattr(FsContext *ctx,
     if (xops) {
         return xops->removexattr(ctx, path, name);
     }
-    errno = -EOPNOTSUPP;
+    errno = EOPNOTSUPP;
     return -1;
 
 }

@@ -20,7 +20,7 @@
 #define TARGET_NR_lseek		 19
 #define TARGET_NR_getxpid		 20
 #define TARGET_NR_osf_mount		 21
-#define TARGET_NR_umount		 22
+#define TARGET_NR_umount2		 22
 #define TARGET_NR_setuid		 23
 #define TARGET_NR_getxuid		 24
 #define TARGET_NR_exec_with_loader	 25	/* not implemented */
@@ -46,7 +46,7 @@
 #define TARGET_NR_open		 45
 #define TARGET_NR_osf_old_sigaction	 46	/* not implemented */
 #define TARGET_NR_getxgid		 47
-#define TARGET_NR_osf_sigprocmask	 48
+#define TARGET_NR_sigprocmask    48
 #define TARGET_NR_osf_getlogin	 49	/* not implemented */
 #define TARGET_NR_osf_setlogin	 50	/* not implemented */
 #define TARGET_NR_acct		 51
@@ -255,7 +255,7 @@
 #define TARGET_NR_sysinfo		318
 #define TARGET_NR__sysctl		319
 /* 320 was sys_idle.  */
-#define TARGET_NR_oldumount		321
+#define TARGET_NR_umount		321
 #define TARGET_NR_swapon		322
 #define TARGET_NR_times		323
 #define TARGET_NR_personality	324

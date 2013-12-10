@@ -20,7 +20,7 @@
 
 
 #define NO_QEMU_PROTOS
-#include "../../hw/fw_cfg.h"
+#include "../../include/hw/nvram/fw_cfg.h"
 
 #define BIOS_CFG_IOPORT_CFG	0x510
 #define BIOS_CFG_IOPORT_DATA	0x511
@@ -124,7 +124,8 @@
 	movw		%ax, %ds;
 
 #define OPTION_ROM_END					\
-    .align 512, 0;					\
+	.byte		0;				\
+	.align		512, 0;				\
     _end:
 
 #define BOOT_ROM_END					\

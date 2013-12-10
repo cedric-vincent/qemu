@@ -263,6 +263,8 @@ static HW *glue (audio_pcm_hw_add_new_, TYPE) (struct audsettings *as)
     }
 
     hw->pcm_ops = drv->pcm_ops;
+    hw->ctl_caps = drv->ctl_caps;
+
     QLIST_INIT (&hw->sw_head);
 #ifdef DAC
     QLIST_INIT (&hw->cap_head);
@@ -408,14 +410,14 @@ SW *glue (AUD_open_, TYPE) (
     SW *old_sw = NULL;
 #endif
 
-    ldebug ("open %s, freq %d, nchannels %d, fmt %d\n",
-            name, as->freq, as->nchannels, as->fmt);
-
     if (audio_bug (AUDIO_FUNC, !card || !name || !callback_fn || !as)) {
         dolog ("card=%p name=%p callback_fn=%p as=%p\n",
                card, name, callback_fn, as);
         goto fail;
     }
+
+    ldebug ("open %s, freq %d, nchannels %d, fmt %d\n",
+            name, as->freq, as->nchannels, as->fmt);
 
     if (audio_bug (AUDIO_FUNC, audio_validate_settings (as))) {
         audio_print_settings (as);

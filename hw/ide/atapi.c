@@ -24,7 +24,7 @@
  */
 
 #include "hw/ide/internal.h"
-#include "hw/scsi.h"
+#include "hw/scsi/scsi.h"
 
 static void ide_atapi_cmd_read_dma_cb(void *opaque, int ret);
 
@@ -352,14 +352,8 @@ static void ide_atapi_cmd_read_dma_cb(void *opaque, int ret)
     s->bus->dma->aiocb = bdrv_aio_readv(s->bs, (int64_t)s->lba << 2,
                                        &s->bus->dma->qiov, n * 4,
                                        ide_atapi_cmd_read_dma_cb, s);
-    if (!s->bus->dma->aiocb) {
-        /* Note: media not present is the most likely case */
-        ide_atapi_cmd_error(s, NOT_READY,
-                            ASC_MEDIUM_NOT_PRESENT);
-        goto eot;
-    }
-
     return;
+
 eot:
     bdrv_acct_done(s->bs, &s->acct);
     s->bus->dma->ops->add_status(s->bus->dma, BM_STATUS_INT);
@@ -443,7 +437,7 @@ static int ide_dvd_read_structure(IDEState *s, int format,
                 cpu_to_ube32(buf + 16, total_sectors - 1); /* l0 end sector */
 
                 /* Size of buffer, not including 2 byte size field */
-                cpu_to_be16wu((uint16_t *)buf, 2048 + 2);
+                stw_be_p(buf, 2048 + 2);
 
                 /* 2k data + 4 byte header */
                 return (2048 + 4);
@@ -454,7 +448,7 @@ static int ide_dvd_read_structure(IDEState *s, int format,
             buf[5] = 0; /* no region restrictions */
 
             /* Size of buffer, not including 2 byte size field */
-            cpu_to_be16wu((uint16_t *)buf, 4 + 2);
+            stw_be_p(buf, 4 + 2);
 
             /* 4 byte header + 4 byte data */
             return (4 + 4);
@@ -464,7 +458,7 @@ static int ide_dvd_read_structure(IDEState *s, int format,
 
         case 0x04: /* DVD disc manufacturing information */
             /* Size of buffer, not including 2 byte size field */
-            cpu_to_be16wu((uint16_t *)buf, 2048 + 2);
+            stw_be_p(buf, 2048 + 2);
 
             /* 2k data + 4 byte header */
             return (2048 + 4);
@@ -477,22 +471,22 @@ static int ide_dvd_read_structure(IDEState *s, int format,
 
             buf[4] = 0x00; /* Physical format */
             buf[5] = 0x40; /* Not writable, is readable */
-            cpu_to_be16wu((uint16_t *)(buf + 6), 2048 + 4);
+            stw_be_p(buf + 6, 2048 + 4);
 
             buf[8] = 0x01; /* Copyright info */
             buf[9] = 0x40; /* Not writable, is readable */
-            cpu_to_be16wu((uint16_t *)(buf + 10), 4 + 4);
+            stw_be_p(buf + 10, 4 + 4);
 
             buf[12] = 0x03; /* BCA info */
             buf[13] = 0x40; /* Not writable, is readable */
-            cpu_to_be16wu((uint16_t *)(buf + 14), 188 + 4);
+            stw_be_p(buf + 14, 188 + 4);
 
             buf[16] = 0x04; /* Manufacturing info */
             buf[17] = 0x40; /* Not writable, is readable */
-            cpu_to_be16wu((uint16_t *)(buf + 18), 2048 + 4);
+            stw_be_p(buf + 18, 2048 + 4);
 
             /* Size of buffer, not including 2 byte size field */
-            cpu_to_be16wu((uint16_t *)buf, 16 + 2);
+            stw_be_p(buf, 16 + 2);
 
             /* data written + 4 byte header */
             return (16 + 4);
@@ -881,6 +875,12 @@ static void cmd_start_stop_unit(IDEState *s, uint8_t* buf)
     int sense;
     bool start = buf[4] & 1;
     bool loej = buf[4] & 2;     /* load on start, eject on !start */
+    int pwrcnd = buf[4] & 0xf0;
+
+    if (pwrcnd) {
+        /* eject/load only happens for power condition == 0 */
+        return;
+    }
 
     if (loej) {
         if (!start && !s->tray_open && s->tray_locked) {
@@ -889,8 +889,11 @@ static void cmd_start_stop_unit(IDEState *s, uint8_t* buf)
             ide_atapi_cmd_error(s, sense, ASC_MEDIA_REMOVAL_PREVENTED);
             return;
         }
-        bdrv_eject(s->bs, !start);
-        s->tray_open = !start;
+
+        if (s->tray_open != !start) {
+            bdrv_eject(s->bs, !start);
+            s->tray_open = !start;
+        }
     }
 
     ide_atapi_cmd_ok(s);
@@ -957,6 +960,36 @@ static void cmd_read_cdvd_capacity(IDEState *s, uint8_t* buf)
     cpu_to_ube32(buf, total_sectors - 1);
     cpu_to_ube32(buf + 4, 2048);
     ide_atapi_cmd_reply(s, 8, 8);
+}
+
+static void cmd_read_disc_information(IDEState *s, uint8_t* buf)
+{
+    uint8_t type = buf[1] & 7;
+    uint32_t max_len = ube16_to_cpu(buf + 7);
+
+    /* Types 1/2 are only defined for Blu-Ray.  */
+    if (type != 0) {
+        ide_atapi_cmd_error(s, ILLEGAL_REQUEST,
+                            ASC_INV_FIELD_IN_CMD_PACKET);
+        return;
+    }
+
+    memset(buf, 0, 34);
+    buf[1] = 32;
+    buf[2] = 0xe; /* last session complete, disc finalized */
+    buf[3] = 1;   /* first track on disc */
+    buf[4] = 1;   /* # of sessions */
+    buf[5] = 1;   /* first track of last session */
+    buf[6] = 1;   /* last track of last session */
+    buf[7] = 0x20; /* unrestricted use */
+    buf[8] = 0x00; /* CD-ROM or DVD-ROM */
+    /* 9-10-11: most significant byte corresponding bytes 4-5-6 */
+    /* 12-23: not meaningful for CD-ROM or DVD-ROM */
+    /* 24-31: disc bar code */
+    /* 32: disc application code */
+    /* 33: number of OPC tables */
+
+    ide_atapi_cmd_reply(s, 34, max_len);
 }
 
 static void cmd_read_dvd_structure(IDEState *s, uint8_t* buf)
@@ -1048,6 +1081,7 @@ static const struct {
     [ 0x43 ] = { cmd_read_toc_pma_atip,             CHECK_READY },
     [ 0x46 ] = { cmd_get_configuration,             ALLOW_UA },
     [ 0x4a ] = { cmd_get_event_status_notification, ALLOW_UA },
+    [ 0x51 ] = { cmd_read_disc_information,         CHECK_READY },
     [ 0x5a ] = { cmd_mode_sense, /* (10) */         0 },
     [ 0xa8 ] = { cmd_read, /* (12) */               CHECK_READY },
     [ 0xad ] = { cmd_read_dvd_structure,            CHECK_READY },
@@ -1090,12 +1124,17 @@ void ide_atapi_cmd(IDEState *s)
      * GET_EVENT_STATUS_NOTIFICATION to detect such tray open/close
      * states rely on this behavior.
      */
-    if (!s->tray_open && bdrv_is_inserted(s->bs) && s->cdrom_changed) {
-        ide_atapi_cmd_error(s, NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+    if (!(atapi_cmd_table[s->io_buffer[0]].flags & ALLOW_UA) &&
+        !s->tray_open && bdrv_is_inserted(s->bs) && s->cdrom_changed) {
 
-        s->cdrom_changed = 0;
-        s->sense_key = UNIT_ATTENTION;
-        s->asc = ASC_MEDIUM_MAY_HAVE_CHANGED;
+        if (s->cdrom_changed == 1) {
+            ide_atapi_cmd_error(s, NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+            s->cdrom_changed = 2;
+        } else {
+            ide_atapi_cmd_error(s, UNIT_ATTENTION, ASC_MEDIUM_MAY_HAVE_CHANGED);
+            s->cdrom_changed = 0;
+        }
+
         return;
     }
 

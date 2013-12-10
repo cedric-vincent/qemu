@@ -28,7 +28,7 @@
 #define TCG_PLUGIN_H
 
 #include "qemu-common.h"
-#include "exec-all.h"
+#include "qom/cpu.h"
 
 #ifndef TCG_TARGET_REG_BITS
 #include "tcg.h"
@@ -51,7 +51,7 @@
     void tcg_plugin_register_info(uint64_t pc, CPUState *env, TranslationBlock *tb);
     void tcg_plugin_before_gen_tb(CPUState *env, TranslationBlock *tb);
     void tcg_plugin_after_gen_tb(CPUState *env, TranslationBlock *tb);
-    void tcg_plugin_after_gen_opc(TCGOpcode opname, uint16_t *opcode, TCGArg *opargs, uint8_t nb_args);
+    void tcg_plugin_after_gen_opc(uint16_t *opcode, TCGArg *opargs, uint8_t nb_args);
     const char *tcg_plugin_get_filename(void);
 #else
 #   define tcg_plugin_enabled() false
@@ -60,7 +60,7 @@
 #   define tcg_plugin_register_info(pc, env, tb)
 #   define tcg_plugin_before_gen_tb(env, tb)
 #   define tcg_plugin_after_gen_tb(env, tb)
-#   define tcg_plugin_after_gen_opc(opname, tcg_opcode, tcg_opargs_, nb_args)
+#   define tcg_plugin_after_gen_opc(tcg_opcode, tcg_opargs_, nb_args)
 #   define tcg_plugin_get_filename() "<unknown>"
 #endif /* !CONFIG_TCG_PLUGIN */
 
@@ -83,7 +83,6 @@ typedef struct
 #define TPI_MAX_OP_ARGS 6
 typedef struct
 {
-    TCGOpcode name;
     uint64_t pc;
     uint8_t nb_args;
 
@@ -148,7 +147,7 @@ struct TCGPluginInterface
 
 #define TPI_INIT_VERSION(tpi) do {                                     \
         (tpi).version = TPI_VERSION;                                   \
-        (tpi).guest   = TARGET_ARCH;                                   \
+        (tpi).guest   = TARGET_NAME;                                   \
         (tpi).mode    = EMULATION_MODE;                                \
         (tpi).sizeof_CPUState = sizeof(CPUState);                      \
         (tpi).sizeof_TranslationBlock = sizeof(TranslationBlock);      \

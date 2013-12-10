@@ -1,4 +1,4 @@
-/* vim:set shiftwidth=4 ts=8: */
+/* vim:set shiftwidth=4 ts=4: */
 /*
  * QEMU Block driver for virtual VFAT (shadows a local directory)
  *
@@ -25,9 +25,11 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include "qemu-common.h"
-#include "block_int.h"
-#include "module.h"
-#include "migration.h"
+#include "block/block_int.h"
+#include "qemu/module.h"
+#include "migration/migration.h"
+#include "qapi/qmp/qint.h"
+#include "qapi/qmp/qbool.h"
 
 #ifndef S_IWGRP
 #define S_IWGRP 0
@@ -359,11 +361,12 @@ typedef struct BDRVVVFATState {
  * if the position is outside the specified geometry, fill maximum value for CHS
  * and return 1 to signal overflow.
  */
-static int sector2CHS(BlockDriverState* bs, mbr_chs_t * chs, int spos){
+static int sector2CHS(mbr_chs_t *chs, int spos, int cyls, int heads, int secs)
+{
     int head,sector;
-    sector   = spos % (bs->secs);  spos/= bs->secs;
-    head     = spos % (bs->heads); spos/= bs->heads;
-    if(spos >= bs->cyls){
+    sector   = spos % secs;  spos /= secs;
+    head     = spos % heads; spos /= heads;
+    if (spos >= cyls) {
         /* Overflow,
         it happens if 32bit sector positions are used, while CHS is only 24bit.
         Windows/Dos is said to take 1023/255/63 as nonrepresentable CHS */
@@ -378,7 +381,7 @@ static int sector2CHS(BlockDriverState* bs, mbr_chs_t * chs, int spos){
     return 0;
 }
 
-static void init_mbr(BDRVVVFATState* s)
+static void init_mbr(BDRVVVFATState *s, int cyls, int heads, int secs)
 {
     /* TODO: if the files mbr.img and bootsect.img exist, use them */
     mbr_t* real_mbr=(mbr_t*)s->first_sectors;
@@ -393,12 +396,15 @@ static void init_mbr(BDRVVVFATState* s)
     partition->attributes=0x80; /* bootable */
 
     /* LBA is used when partition is outside the CHS geometry */
-    lba = sector2CHS(s->bs, &partition->start_CHS, s->first_sectors_number-1);
-    lba|= sector2CHS(s->bs, &partition->end_CHS,   s->sector_count);
+    lba  = sector2CHS(&partition->start_CHS, s->first_sectors_number - 1,
+                     cyls, heads, secs);
+    lba |= sector2CHS(&partition->end_CHS,   s->bs->total_sectors - 1,
+                     cyls, heads, secs);
 
     /*LBA partitions are identified only by start/length_sector_long not by CHS*/
-    partition->start_sector_long =cpu_to_le32(s->first_sectors_number-1);
-    partition->length_sector_long=cpu_to_le32(s->sector_count - s->first_sectors_number+1);
+    partition->start_sector_long  = cpu_to_le32(s->first_sectors_number - 1);
+    partition->length_sector_long = cpu_to_le32(s->bs->total_sectors
+                                                - s->first_sectors_number + 1);
 
     /* FAT12/FAT16/FAT32 */
     /* DOS uses different types when partition is LBA,
@@ -525,13 +531,9 @@ static inline uint8_t fat_chksum(const direntry_t* entry)
 /* if return_time==0, this returns the fat_date, else the fat_time */
 static uint16_t fat_datetime(time_t time,int return_time) {
     struct tm* t;
-#ifdef _WIN32
-    t=localtime(&time); /* this is not thread safe */
-#else
     struct tm t1;
     t = &t1;
     localtime_r(&time,t);
-#endif
     if(return_time)
 	return cpu_to_le16((t->tm_sec/2)|(t->tm_min<<5)|(t->tm_hour<<11));
     return cpu_to_le16((t->tm_mday)|((t->tm_mon+1)<<5)|((t->tm_year-80)<<9));
@@ -830,7 +832,7 @@ static inline off_t cluster2sector(BDRVVVFATState* s, uint32_t cluster_num)
 }
 
 static int init_directories(BDRVVVFATState* s,
-	const char* dirname)
+                            const char *dirname, int heads, int secs)
 {
     bootsector_t* bootsector;
     mapping_t* mapping;
@@ -957,8 +959,8 @@ static int init_directories(BDRVVVFATState* s,
     bootsector->media_type=(s->first_sectors_number>1?0xf8:0xf0); /* media descriptor (f8=hd, f0=3.5 fd)*/
     s->fat.pointer[0] = bootsector->media_type;
     bootsector->sectors_per_fat=cpu_to_le16(s->sectors_per_fat);
-    bootsector->sectors_per_track=cpu_to_le16(s->bs->secs);
-    bootsector->number_of_heads=cpu_to_le16(s->bs->heads);
+    bootsector->sectors_per_track = cpu_to_le16(secs);
+    bootsector->number_of_heads = cpu_to_le16(heads);
     bootsector->hidden_sectors=cpu_to_le32(s->first_sectors_number==1?0:0x3f);
     bootsector->total_sectors=cpu_to_le32(s->sector_count>0xffff?s->sector_count:0);
 
@@ -982,10 +984,97 @@ static BDRVVVFATState *vvv = NULL;
 static int enable_write_target(BDRVVVFATState *s);
 static int is_consistent(BDRVVVFATState *s);
 
-static int vvfat_open(BlockDriverState *bs, const char* dirname, int flags)
+static void vvfat_rebind(BlockDriverState *bs)
 {
     BDRVVVFATState *s = bs->opaque;
+    s->bs = bs;
+}
+
+static QemuOptsList runtime_opts = {
+    .name = "vvfat",
+    .head = QTAILQ_HEAD_INITIALIZER(runtime_opts.head),
+    .desc = {
+        {
+            .name = "dir",
+            .type = QEMU_OPT_STRING,
+            .help = "Host directory to map to the vvfat device",
+        },
+        {
+            .name = "fat-type",
+            .type = QEMU_OPT_NUMBER,
+            .help = "FAT type (12, 16 or 32)",
+        },
+        {
+            .name = "floppy",
+            .type = QEMU_OPT_BOOL,
+            .help = "Create a floppy rather than a hard disk image",
+        },
+        {
+            .name = "rw",
+            .type = QEMU_OPT_BOOL,
+            .help = "Make the image writable",
+        },
+        { /* end of list */ }
+    },
+};
+
+static void vvfat_parse_filename(const char *filename, QDict *options,
+                                 Error **errp)
+{
+    int fat_type = 0;
+    bool floppy = false;
+    bool rw = false;
     int i;
+
+    if (!strstart(filename, "fat:", NULL)) {
+        error_setg(errp, "File name string must start with 'fat:'");
+        return;
+    }
+
+    /* Parse options */
+    if (strstr(filename, ":32:")) {
+        fat_type = 32;
+    } else if (strstr(filename, ":16:")) {
+        fat_type = 16;
+    } else if (strstr(filename, ":12:")) {
+        fat_type = 12;
+    }
+
+    if (strstr(filename, ":floppy:")) {
+        floppy = true;
+    }
+
+    if (strstr(filename, ":rw:")) {
+        rw = true;
+    }
+
+    /* Get the directory name without options */
+    i = strrchr(filename, ':') - filename;
+    assert(i >= 3);
+    if (filename[i - 2] == ':' && qemu_isalpha(filename[i - 1])) {
+        /* workaround for DOS drive names */
+        filename += i - 1;
+    } else {
+        filename += i + 1;
+    }
+
+    /* Fill in the options QDict */
+    qdict_put(options, "dir", qstring_from_str(filename));
+    qdict_put(options, "fat-type", qint_from_int(fat_type));
+    qdict_put(options, "floppy", qbool_from_int(floppy));
+    qdict_put(options, "rw", qbool_from_int(rw));
+}
+
+static int vvfat_open(BlockDriverState *bs, QDict *options, int flags,
+                      Error **errp)
+{
+    BDRVVVFATState *s = bs->opaque;
+    int cyls, heads, secs;
+    bool floppy;
+    const char *dirname;
+    QemuOpts *opts;
+    Error *local_err = NULL;
+    int ret;
 
 #ifdef DEBUG
     vvv = s;
@@ -995,6 +1084,65 @@ DLOG(if (stderr == NULL) {
     stderr = fopen("vvfat.log", "a");
     setbuf(stderr, NULL);
 })
+
+    opts = qemu_opts_create_nofail(&runtime_opts);
+    qemu_opts_absorb_qdict(opts, options, &local_err);
+    if (error_is_set(&local_err)) {
+        qerror_report_err(local_err);
+        error_free(local_err);
+        ret = -EINVAL;
+        goto fail;
+    }
+
+    dirname = qemu_opt_get(opts, "dir");
+    if (!dirname) {
+        qerror_report(ERROR_CLASS_GENERIC_ERROR, "vvfat block driver requires "
+                      "a 'dir' option");
+        ret = -EINVAL;
+        goto fail;
+    }
+
+    s->fat_type = qemu_opt_get_number(opts, "fat-type", 0);
+    floppy = qemu_opt_get_bool(opts, "floppy", false);
+
+    if (floppy) {
+        /* 1.44MB or 2.88MB floppy.  2.88MB can be FAT12 (default) or FAT16. */
+        if (!s->fat_type) {
+            s->fat_type = 12;
+            secs = 36;
+            s->sectors_per_cluster = 2;
+        } else {
+            secs = s->fat_type == 12 ? 18 : 36;
+            s->sectors_per_cluster = 1;
+        }
+        s->first_sectors_number = 1;
+        cyls = 80;
+        heads = 2;
+    } else {
+        /* 32MB or 504MB disk*/
+        if (!s->fat_type) {
+            s->fat_type = 16;
+        }
+        cyls = s->fat_type == 12 ? 64 : 1024;
+        heads = 16;
+        secs = 63;
+    }
+
+    switch (s->fat_type) {
+    case 32:
+	    fprintf(stderr, "Big fat greek warning: FAT32 has not been tested. "
+                "You are welcome to do so!\n");
+        break;
+    case 16:
+    case 12:
+        break;
+    default:
+        qerror_report(ERROR_CLASS_GENERIC_ERROR, "Valid FAT types are only "
+                      "12, 16 and 32");
+        ret = -EINVAL;
+        goto fail;
+    }
+
 
     s->bs = bs;
 
@@ -1011,67 +1159,30 @@ DLOG(if (stderr == NULL) {
     s->fat2 = NULL;
     s->downcase_short_names = 1;
 
-    if (!strstart(dirname, "fat:", NULL))
-	return -1;
+    fprintf(stderr, "vvfat %s chs %d,%d,%d\n",
+            dirname, cyls, heads, secs);
 
-    if (strstr(dirname, ":32:")) {
-	fprintf(stderr, "Big fat greek warning: FAT32 has not been tested. You are welcome to do so!\n");
-	s->fat_type = 32;
-    } else if (strstr(dirname, ":16:")) {
-	s->fat_type = 16;
-    } else if (strstr(dirname, ":12:")) {
-	s->fat_type = 12;
+    s->sector_count = cyls * heads * secs - (s->first_sectors_number - 1);
+
+    if (qemu_opt_get_bool(opts, "rw", false)) {
+        ret = enable_write_target(s);
+        if (ret < 0) {
+            goto fail;
+        }
+        bs->read_only = 0;
     }
 
-    if (strstr(dirname, ":floppy:")) {
-	/* 1.44MB or 2.88MB floppy.  2.88MB can be FAT12 (default) or FAT16. */
-	if (!s->fat_type) {
-	    s->fat_type = 12;
-	    bs->secs = 36;
-	    s->sectors_per_cluster=2;
-	} else {
-	    bs->secs=(s->fat_type == 12 ? 18 : 36);
-	    s->sectors_per_cluster=1;
-	}
-	s->first_sectors_number = 1;
-	bs->cyls=80; bs->heads=2;
-    } else {
-	/* 32MB or 504MB disk*/
-	if (!s->fat_type) {
-	    s->fat_type = 16;
-	}
-	bs->cyls=(s->fat_type == 12 ? 64 : 1024);
-	bs->heads=16; bs->secs=63;
+    bs->total_sectors = cyls * heads * secs;
+
+    if (init_directories(s, dirname, heads, secs)) {
+        ret = -EIO;
+        goto fail;
     }
-
-    s->sector_count=bs->cyls*bs->heads*bs->secs-(s->first_sectors_number-1);
-
-    if (strstr(dirname, ":rw:")) {
-	if (enable_write_target(s))
-	    return -1;
-	bs->read_only = 0;
-    }
-
-    i = strrchr(dirname, ':') - dirname;
-    assert(i >= 3);
-    if (dirname[i-2] == ':' && qemu_isalpha(dirname[i-1]))
-	/* workaround for DOS drive names */
-	dirname += i-1;
-    else
-	dirname += i+1;
-
-    bs->total_sectors=bs->cyls*bs->heads*bs->secs;
-
-    if(init_directories(s, dirname))
-	return -1;
 
     s->sector_count = s->faked_sectors + s->sectors_per_cluster*s->cluster_count;
 
-    if(s->first_sectors_number==0x40)
-	init_mbr(s);
-    else {
-        /* MS-DOS does not like to know about CHS (?). */
-	bs->heads = bs->cyls = bs->secs = 0;
+    if (s->first_sectors_number == 0x40) {
+        init_mbr(s, cyls, heads, secs);
     }
 
     //    assert(is_consistent(s));
@@ -1085,7 +1196,10 @@ DLOG(if (stderr == NULL) {
         migrate_add_blocker(s->migration_blocker);
     }
 
-    return 0;
+    ret = 0;
+fail:
+    qemu_opts_del(opts);
+    return ret;
 }
 
 static inline void vvfat_close_current_file(BDRVVVFATState *s)
@@ -1093,7 +1207,7 @@ static inline void vvfat_close_current_file(BDRVVVFATState *s)
     if(s->current_mapping) {
 	s->current_mapping = NULL;
 	if (s->current_fd) {
-		close(s->current_fd);
+		qemu_close(s->current_fd);
 		s->current_fd = 0;
 	}
     }
@@ -1150,7 +1264,7 @@ static int open_file(BDRVVVFATState* s,mapping_t* mapping)
     if(!s->current_mapping ||
 	    strcmp(s->current_mapping->path,mapping->path)) {
 	/* open file */
-	int fd = open(mapping->path, O_RDONLY | O_BINARY | O_LARGEFILE);
+	int fd = qemu_open(mapping->path, O_RDONLY | O_BINARY | O_LARGEFILE);
 	if(fd<0)
 	    return -1;
 	vvfat_close_current_file(s);
@@ -2209,7 +2323,7 @@ static int commit_one_file(BDRVVVFATState* s,
     for (i = s->cluster_size; i < offset; i += s->cluster_size)
 	c = modified_fat_get(s, c);
 
-    fd = open(mapping->path, O_RDWR | O_CREAT | O_BINARY, 0666);
+    fd = qemu_open(mapping->path, O_RDWR | O_CREAT | O_BINARY, 0666);
     if (fd < 0) {
 	fprintf(stderr, "Could not open %s... (%s, %d)\n", mapping->path,
 		strerror(errno), errno);
@@ -2218,6 +2332,7 @@ static int commit_one_file(BDRVVVFATState* s,
     }
     if (offset > 0) {
         if (lseek(fd, offset, SEEK_SET) != offset) {
+            qemu_close(fd);
             g_free(cluster);
             return -3;
         }
@@ -2238,11 +2353,13 @@ static int commit_one_file(BDRVVVFATState* s,
 	    (uint8_t*)cluster, (rest_size + 0x1ff) / 0x200);
 
         if (ret < 0) {
+            qemu_close(fd);
             g_free(cluster);
             return ret;
         }
 
         if (write(fd, cluster, rest_size) < 0) {
+            qemu_close(fd);
             g_free(cluster);
             return -2;
         }
@@ -2253,11 +2370,11 @@ static int commit_one_file(BDRVVVFATState* s,
 
     if (ftruncate(fd, size)) {
         perror("ftruncate()");
-        close(fd);
+        qemu_close(fd);
         g_free(cluster);
         return -4;
     }
-    close(fd);
+    qemu_close(fd);
     g_free(cluster);
 
     return commit_mappings(s, first_cluster, dir_index);
@@ -2758,16 +2875,17 @@ static coroutine_fn int vvfat_co_write(BlockDriverState *bs, int64_t sector_num,
     return ret;
 }
 
-static int vvfat_is_allocated(BlockDriverState *bs,
+static int64_t coroutine_fn vvfat_co_get_block_status(BlockDriverState *bs,
 	int64_t sector_num, int nb_sectors, int* n)
 {
     BDRVVVFATState* s = bs->opaque;
     *n = s->sector_count - sector_num;
-    if (*n > nb_sectors)
-	*n = nb_sectors;
-    else if (*n < 0)
-	return 0;
-    return 1;
+    if (*n > nb_sectors) {
+        *n = nb_sectors;
+    } else if (*n < 0) {
+        return 0;
+    }
+    return BDRV_BLOCK_DATA;
 }
 
 static int write_target_commit(BlockDriverState *bs, int64_t sector_num,
@@ -2778,7 +2896,7 @@ static int write_target_commit(BlockDriverState *bs, int64_t sector_num,
 
 static void write_target_close(BlockDriverState *bs) {
     BDRVVVFATState* s = *((BDRVVVFATState**) bs->opaque);
-    bdrv_delete(s->qcow);
+    bdrv_unref(s->qcow);
     g_free(s->qcow_filename);
 }
 
@@ -2792,6 +2910,7 @@ static int enable_write_target(BDRVVVFATState *s)
 {
     BlockDriver *bdrv_qcow;
     QEMUOptionParameter *options;
+    Error *local_err = NULL;
     int ret;
     int size = sector2cluster(s, s->sector_count);
     s->used_clusters = calloc(size, 1);
@@ -2799,37 +2918,50 @@ static int enable_write_target(BDRVVVFATState *s)
     array_init(&(s->commits), sizeof(commit_t));
 
     s->qcow_filename = g_malloc(1024);
-    get_tmp_filename(s->qcow_filename, 1024);
+    ret = get_tmp_filename(s->qcow_filename, 1024);
+    if (ret < 0) {
+        goto err;
+    }
 
     bdrv_qcow = bdrv_find_format("qcow");
     options = parse_option_parameters("", bdrv_qcow->create_options, NULL);
     set_option_parameter_int(options, BLOCK_OPT_SIZE, s->sector_count * 512);
     set_option_parameter(options, BLOCK_OPT_BACKING_FILE, "fat:");
 
-    if (bdrv_create(bdrv_qcow, s->qcow_filename, options) < 0)
-	return -1;
-
-    s->qcow = bdrv_new("");
-    if (s->qcow == NULL) {
-        return -1;
+    ret = bdrv_create(bdrv_qcow, s->qcow_filename, options, &local_err);
+    if (ret < 0) {
+        qerror_report_err(local_err);
+        error_free(local_err);
+        goto err;
     }
 
-    ret = bdrv_open(s->qcow, s->qcow_filename,
-            BDRV_O_RDWR | BDRV_O_CACHE_WB | BDRV_O_NO_FLUSH, bdrv_qcow);
+    s->qcow = bdrv_new("");
+
+    ret = bdrv_open(s->qcow, s->qcow_filename, NULL,
+            BDRV_O_RDWR | BDRV_O_CACHE_WB | BDRV_O_NO_FLUSH, bdrv_qcow,
+            &local_err);
     if (ret < 0) {
-	return ret;
+        qerror_report_err(local_err);
+        error_free(local_err);
+        bdrv_unref(s->qcow);
+        goto err;
     }
 
 #ifndef _WIN32
     unlink(s->qcow_filename);
 #endif
 
-    s->bs->backing_hd = calloc(sizeof(BlockDriverState), 1);
+    s->bs->backing_hd = bdrv_new("");
     s->bs->backing_hd->drv = &vvfat_write_target;
     s->bs->backing_hd->opaque = g_malloc(sizeof(void*));
     *(void**)s->bs->backing_hd->opaque = s;
 
     return 0;
+
+err:
+    g_free(s->qcow_filename);
+    s->qcow_filename = NULL;
+    return ret;
 }
 
 static void vvfat_close(BlockDriverState *bs)
@@ -2849,14 +2981,18 @@ static void vvfat_close(BlockDriverState *bs)
 }
 
 static BlockDriver bdrv_vvfat = {
-    .format_name	= "vvfat",
-    .instance_size	= sizeof(BDRVVVFATState),
-    .bdrv_file_open	= vvfat_open,
-    .bdrv_read          = vvfat_co_read,
-    .bdrv_write         = vvfat_co_write,
-    .bdrv_close		= vvfat_close,
-    .bdrv_is_allocated	= vvfat_is_allocated,
-    .protocol_name	= "fat",
+    .format_name            = "vvfat",
+    .protocol_name          = "fat",
+    .instance_size          = sizeof(BDRVVVFATState),
+
+    .bdrv_parse_filename    = vvfat_parse_filename,
+    .bdrv_file_open         = vvfat_open,
+    .bdrv_close             = vvfat_close,
+    .bdrv_rebind            = vvfat_rebind,
+
+    .bdrv_read              = vvfat_co_read,
+    .bdrv_write             = vvfat_co_write,
+    .bdrv_co_get_block_status = vvfat_co_get_block_status,
 };
 
 static void bdrv_vvfat_init(void)

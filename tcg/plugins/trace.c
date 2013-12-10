@@ -30,7 +30,7 @@
 #include <inttypes.h>
 
 #include "tcg-plugin.h"
-#include "disas.h"
+#include "disas/disas.h"
 
 static void pre_tb_helper_code(const TCGPluginInterface *tpi,
                                TPIHelperInfo info, uint64_t address,

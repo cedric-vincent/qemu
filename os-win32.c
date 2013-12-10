@@ -23,6 +23,7 @@
  * THE SOFTWARE.
  */
 #include <windows.h>
+#include <mmsystem.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -30,7 +31,7 @@
 #include <errno.h>
 #include <sys/time.h>
 #include "config-host.h"
-#include "sysemu.h"
+#include "sysemu/sysemu.h"
 #include "qemu-options.h"
 
 /***********************************************************/
@@ -44,37 +45,42 @@ int setenv(const char *name, const char *value, int overwrite)
         char *string = g_malloc(length);
         snprintf(string, length, "%s=%s", name, value);
         result = putenv(string);
+
+        /* Windows takes a copy and does not continue to use our string.
+         * Therefore it can be safely freed on this platform.  POSIX code
+         * typically has to leak the string because according to the spec it
+         * becomes part of the environment.
+         */
+        g_free(string);
     }
     return result;
 }
 
 static BOOL WINAPI qemu_ctrl_handler(DWORD type)
 {
-    exit(STATUS_CONTROL_C_EXIT);
+    qemu_system_shutdown_request();
+    /* Windows 7 kills application when the function returns.
+       Sleep here to give QEMU a try for closing.
+       Sleep period is 10000ms because Windows kills the program
+       after 10 seconds anyway. */
+    Sleep(10000);
+
     return TRUE;
+}
+
+static TIMECAPS mm_tc;
+
+static void os_undo_timer_resolution(void)
+{
+    timeEndPeriod(mm_tc.wPeriodMin);
 }
 
 void os_setup_early_signal_handling(void)
 {
-    /* Note: cpu_interrupt() is currently not SMP safe, so we force
-       QEMU to run on a single CPU */
-    HANDLE h;
-    DWORD_PTR mask, smask;
-    int i;
-
     SetConsoleCtrlHandler(qemu_ctrl_handler, TRUE);
-
-    h = GetCurrentProcess();
-    if (GetProcessAffinityMask(h, &mask, &smask)) {
-        for(i = 0; i < 32; i++) {
-            if (mask & (1 << i))
-                break;
-        }
-        if (i != 32) {
-            mask = 1 << i;
-            SetProcessAffinityMask(h, mask);
-        }
-    }
+    timeGetDevCaps(&mm_tc, sizeof(mm_tc));
+    timeBeginPeriod(mm_tc.wPeriodMin);
+    atexit(os_undo_timer_resolution);
 }
 
 /* Look for support files in the same directory as the executable.  */
@@ -143,9 +149,4 @@ int qemu_create_pidfile(const char *filename)
         return -1;
     }
     return 0;
-}
-
-int qemu_get_thread_id(void)
-{
-    return GetCurrentThreadId();
 }

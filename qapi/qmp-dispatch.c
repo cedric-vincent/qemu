@@ -11,12 +11,12 @@
  *
  */
 
-#include "qemu-objects.h"
-#include "qapi/qmp-core.h"
-#include "json-parser.h"
-#include "error.h"
-#include "error_int.h"
-#include "qerror.h"
+#include "qapi/qmp/types.h"
+#include "qapi/qmp/dispatch.h"
+#include "qapi/qmp/json-parser.h"
+#include "qapi-types.h"
+#include "qapi/error.h"
+#include "qapi/qmp/qerror.h"
 
 static QDict *qmp_dispatch_check_obj(const QObject *request, Error **errp)
 {
@@ -79,6 +79,10 @@ static QObject *do_qmp_dispatch(QObject *request, Error **errp)
         error_set(errp, QERR_COMMAND_NOT_FOUND, command);
         return NULL;
     }
+    if (!cmd->enabled) {
+        error_set(errp, QERR_COMMAND_DISABLED, command);
+        return NULL;
+    }
 
     if (!qdict_haskey(dict, "arguments")) {
         args = qdict_new();
@@ -90,8 +94,12 @@ static QObject *do_qmp_dispatch(QObject *request, Error **errp)
     switch (cmd->type) {
     case QCT_NORMAL:
         cmd->fn(args, &ret, errp);
-        if (!error_is_set(errp) && ret == NULL) {
-            ret = QOBJECT(qdict_new());
+        if (!error_is_set(errp)) {
+            if (cmd->options & QCO_NO_SUCCESS_RESP) {
+                g_assert(!ret);
+            } else if (!ret) {
+                ret = QOBJECT(qdict_new());
+            }
         }
         break;
     }
@@ -99,6 +107,13 @@ static QObject *do_qmp_dispatch(QObject *request, Error **errp)
     QDECREF(args);
 
     return ret;
+}
+
+QObject *qmp_build_error_object(Error *errp)
+{
+    return qobject_from_jsonf("{ 'class': %s, 'desc': %s }",
+                              ErrorClass_lookup[error_get_class(errp)],
+                              error_get_pretty(errp));
 }
 
 QObject *qmp_dispatch(QObject *request)
@@ -111,7 +126,7 @@ QObject *qmp_dispatch(QObject *request)
 
     rsp = qdict_new();
     if (err) {
-        qdict_put_obj(rsp, "error", error_get_qobject(err));
+        qdict_put_obj(rsp, "error", qmp_build_error_object(err));
         error_free(err);
     } else if (ret) {
         qdict_put_obj(rsp, "return", ret);

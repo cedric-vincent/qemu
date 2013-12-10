@@ -16,103 +16,17 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
-#include <stdarg.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <inttypes.h>
 
 #include "cpu.h"
-#include "qemu-common.h"
-#include "kvm.h"
+#include "sysemu/kvm.h"
 #ifndef CONFIG_USER_ONLY
-#include "sysemu.h"
-#include "monitor.h"
+#include "sysemu/sysemu.h"
+#include "monitor/monitor.h"
 #endif
 
 //#define DEBUG_MMU
 
-/* NOTE: must be called outside the CPU execute loop */
-void cpu_reset(CPUX86State *env)
-{
-    int i;
-
-    if (qemu_loglevel_mask(CPU_LOG_RESET)) {
-        qemu_log("CPU Reset (CPU %d)\n", env->cpu_index);
-        log_cpu_state(env, X86_DUMP_FPU | X86_DUMP_CCOP);
-    }
-
-    memset(env, 0, offsetof(CPUX86State, breakpoints));
-
-    tlb_flush(env, 1);
-
-    env->old_exception = -1;
-
-    /* init to reset state */
-
-#ifdef CONFIG_SOFTMMU
-    env->hflags |= HF_SOFTMMU_MASK;
-#endif
-    env->hflags2 |= HF2_GIF_MASK;
-
-    cpu_x86_update_cr0(env, 0x60000010);
-    env->a20_mask = ~0x0;
-    env->smbase = 0x30000;
-
-    env->idt.limit = 0xffff;
-    env->gdt.limit = 0xffff;
-    env->ldt.limit = 0xffff;
-    env->ldt.flags = DESC_P_MASK | (2 << DESC_TYPE_SHIFT);
-    env->tr.limit = 0xffff;
-    env->tr.flags = DESC_P_MASK | (11 << DESC_TYPE_SHIFT);
-
-    cpu_x86_load_seg_cache(env, R_CS, 0xf000, 0xffff0000, 0xffff,
-                           DESC_P_MASK | DESC_S_MASK | DESC_CS_MASK |
-                           DESC_R_MASK | DESC_A_MASK);
-    cpu_x86_load_seg_cache(env, R_DS, 0, 0, 0xffff,
-                           DESC_P_MASK | DESC_S_MASK | DESC_W_MASK |
-                           DESC_A_MASK);
-    cpu_x86_load_seg_cache(env, R_ES, 0, 0, 0xffff,
-                           DESC_P_MASK | DESC_S_MASK | DESC_W_MASK |
-                           DESC_A_MASK);
-    cpu_x86_load_seg_cache(env, R_SS, 0, 0, 0xffff,
-                           DESC_P_MASK | DESC_S_MASK | DESC_W_MASK |
-                           DESC_A_MASK);
-    cpu_x86_load_seg_cache(env, R_FS, 0, 0, 0xffff,
-                           DESC_P_MASK | DESC_S_MASK | DESC_W_MASK |
-                           DESC_A_MASK);
-    cpu_x86_load_seg_cache(env, R_GS, 0, 0, 0xffff,
-                           DESC_P_MASK | DESC_S_MASK | DESC_W_MASK |
-                           DESC_A_MASK);
-
-    env->eip = 0xfff0;
-    env->regs[R_EDX] = env->cpuid_version;
-
-    env->eflags = 0x2;
-
-    /* FPU init */
-    for(i = 0;i < 8; i++)
-        env->fptags[i] = 1;
-    env->fpuc = 0x37f;
-
-    env->mxcsr = 0x1f80;
-
-    env->pat = 0x0007040600070406ULL;
-    env->msr_ia32_misc_enable = MSR_IA32_MISC_ENABLE_DEFAULT;
-
-    memset(env->dr, 0, sizeof(env->dr));
-    env->dr[6] = DR6_FIXED_1;
-    env->dr[7] = DR7_FIXED_1;
-    cpu_breakpoint_remove_all(env, BP_CPU);
-    cpu_watchpoint_remove_all(env, BP_CPU);
-}
-
-void cpu_x86_close(CPUX86State *env)
-{
-    g_free(env);
-}
-
-static void cpu_x86_version(CPUState *env, int *family, int *model)
+static void cpu_x86_version(CPUX86State *env, int *family, int *model)
 {
     int cpuver = env->cpuid_version;
 
@@ -125,7 +39,7 @@ static void cpu_x86_version(CPUState *env, int *family, int *model)
 }
 
 /* Broadcast MCA signal for processor version 06H_EH and above */
-int cpu_x86_support_mca_broadcast(CPUState *env)
+int cpu_x86_support_mca_broadcast(CPUX86State *env)
 {
     int family = 0;
     int model = 0;
@@ -141,7 +55,7 @@ int cpu_x86_support_mca_broadcast(CPUState *env)
 /***********************************************************/
 /* x86 debug */
 
-static const char *cc_op_str[] = {
+static const char *cc_op_str[CC_OP_NB] = {
     "DYNAMIC",
     "EFLAGS",
 
@@ -194,10 +108,21 @@ static const char *cc_op_str[] = {
     "SARW",
     "SARL",
     "SARQ",
+
+    "BMILGB",
+    "BMILGW",
+    "BMILGL",
+    "BMILGQ",
+
+    "ADCX",
+    "ADOX",
+    "ADCOX",
+
+    "CLR",
 };
 
 static void
-cpu_x86_dump_seg_cache(CPUState *env, FILE *f, fprintf_function cpu_fprintf,
+cpu_x86_dump_seg_cache(CPUX86State *env, FILE *f, fprintf_function cpu_fprintf,
                        const char *name, struct SegmentCache *sc)
 {
 #ifdef TARGET_X86_64
@@ -222,7 +147,9 @@ cpu_x86_dump_seg_cache(CPUState *env, FILE *f, fprintf_function cpu_fprintf,
             cpu_fprintf(f, " [%c%c", (sc->flags & DESC_C_MASK) ? 'C' : '-',
                         (sc->flags & DESC_R_MASK) ? 'R' : '-');
         } else {
-            cpu_fprintf(f, (sc->flags & DESC_B_MASK) ? "DS  " : "DS16");
+            cpu_fprintf(f,
+                        (sc->flags & DESC_B_MASK || env->hflags & HF_LMA_MASK)
+                        ? "DS  " : "DS16");
             cpu_fprintf(f, " [%c%c", (sc->flags & DESC_E_MASK) ? 'E' : '-',
                         (sc->flags & DESC_W_MASK) ? 'W' : '-');
         }
@@ -254,16 +181,16 @@ done:
 #define DUMP_CODE_BYTES_TOTAL    50
 #define DUMP_CODE_BYTES_BACKWARD 20
 
-void cpu_dump_state(CPUState *env, FILE *f, fprintf_function cpu_fprintf,
-                    int flags)
+void x86_cpu_dump_state(CPUState *cs, FILE *f, fprintf_function cpu_fprintf,
+                        int flags)
 {
+    X86CPU *cpu = X86_CPU(cs);
+    CPUX86State *env = &cpu->env;
     int eflags, i, nb;
     char cc_op_name[32];
     static const char *seg_name[6] = { "ES", "CS", "SS", "DS", "FS", "GS" };
 
-    cpu_synchronize_state(env);
-
-    eflags = env->eflags;
+    eflags = cpu_compute_eflags(env);
 #ifdef TARGET_X86_64
     if (env->hflags & HF_CS64_MASK) {
         cpu_fprintf(f,
@@ -300,7 +227,7 @@ void cpu_dump_state(CPUState *env, FILE *f, fprintf_function cpu_fprintf,
                     (env->hflags >> HF_INHIBIT_IRQ_SHIFT) & 1,
                     (env->a20_mask >> 20) & 1,
                     (env->hflags >> HF_SMM_SHIFT) & 1,
-                    env->halted);
+                    cs->halted);
     } else
 #endif
     {
@@ -327,7 +254,7 @@ void cpu_dump_state(CPUState *env, FILE *f, fprintf_function cpu_fprintf,
                     (env->hflags >> HF_INHIBIT_IRQ_SHIFT) & 1,
                     (env->a20_mask >> 20) & 1,
                     (env->hflags >> HF_SMM_SHIFT) & 1,
-                    env->halted);
+                    cs->halted);
     }
 
     for(i = 0; i < 6; i++) {
@@ -370,7 +297,7 @@ void cpu_dump_state(CPUState *env, FILE *f, fprintf_function cpu_fprintf,
         cpu_fprintf(f, "\nDR6=" TARGET_FMT_lx " DR7=" TARGET_FMT_lx "\n",
                     env->dr[6], env->dr[7]);
     }
-    if (flags & X86_DUMP_CCOP) {
+    if (flags & CPU_DUMP_CCOP) {
         if ((unsigned)env->cc_op < CC_OP_NB)
             snprintf(cc_op_name, sizeof(cc_op_name), "%s", cc_op_str[env->cc_op]);
         else
@@ -389,7 +316,7 @@ void cpu_dump_state(CPUState *env, FILE *f, fprintf_function cpu_fprintf,
         }
     }
     cpu_fprintf(f, "EFER=%016" PRIx64 "\n", env->efer);
-    if (flags & X86_DUMP_FPU) {
+    if (flags & CPU_DUMP_FPU) {
         int fptag;
         fptag = 0;
         for(i = 0; i < 8; i++) {
@@ -436,7 +363,7 @@ void cpu_dump_state(CPUState *env, FILE *f, fprintf_function cpu_fprintf,
 
         cpu_fprintf(f, "Code=");
         for (i = 0; i < DUMP_CODE_BYTES_TOTAL; i++) {
-            if (cpu_memory_rw_debug(env, base - offs + i, &code, 1, 0) == 0) {
+            if (cpu_memory_rw_debug(cs, base - offs + i, &code, 1, 0) == 0) {
                 snprintf(codestr, sizeof(codestr), "%02x", code);
             } else {
                 snprintf(codestr, sizeof(codestr), "??");
@@ -452,8 +379,10 @@ void cpu_dump_state(CPUState *env, FILE *f, fprintf_function cpu_fprintf,
 /* x86 mmu */
 /* XXX: add PGE support */
 
-void cpu_x86_set_a20(CPUX86State *env, int a20_state)
+void x86_cpu_set_a20(X86CPU *cpu, int a20_state)
 {
+    CPUX86State *env = &cpu->env;
+
     a20_state = (a20_state != 0);
     if (a20_state != ((env->a20_mask >> 20) & 1)) {
 #if defined(DEBUG_MMU)
@@ -461,7 +390,7 @@ void cpu_x86_set_a20(CPUX86State *env, int a20_state)
 #endif
         /* if the cpu is currently executing code, we must unlink it and
            all the potentially executing TB */
-        cpu_interrupt(env, CPU_INTERRUPT_EXITTB);
+        cpu_interrupt(CPU(cpu), CPU_INTERRUPT_EXITTB);
 
         /* when a20 is changed, all the MMU mappings are invalid, so
            we must flush everything */
@@ -529,17 +458,27 @@ void cpu_x86_update_cr4(CPUX86State *env, uint32_t new_cr4)
 #if defined(DEBUG_MMU)
     printf("CR4 update: CR4=%08x\n", (uint32_t)env->cr[4]);
 #endif
-    if ((new_cr4 & (CR4_PGE_MASK | CR4_PAE_MASK | CR4_PSE_MASK)) !=
-        (env->cr[4] & (CR4_PGE_MASK | CR4_PAE_MASK | CR4_PSE_MASK))) {
+    if ((new_cr4 ^ env->cr[4]) &
+        (CR4_PGE_MASK | CR4_PAE_MASK | CR4_PSE_MASK |
+         CR4_SMEP_MASK | CR4_SMAP_MASK)) {
         tlb_flush(env, 1);
     }
     /* SSE handling */
-    if (!(env->cpuid_features & CPUID_SSE))
+    if (!(env->features[FEAT_1_EDX] & CPUID_SSE)) {
         new_cr4 &= ~CR4_OSFXSR_MASK;
-    if (new_cr4 & CR4_OSFXSR_MASK)
+    }
+    env->hflags &= ~HF_OSFXSR_MASK;
+    if (new_cr4 & CR4_OSFXSR_MASK) {
         env->hflags |= HF_OSFXSR_MASK;
-    else
-        env->hflags &= ~HF_OSFXSR_MASK;
+    }
+
+    if (!(env->features[FEAT_7_0_EBX] & CPUID_7_0_EBX_SMAP)) {
+        new_cr4 &= ~CR4_SMAP_MASK;
+    }
+    env->hflags &= ~HF_SMAP_MASK;
+    if (new_cr4 & CR4_SMAP_MASK) {
+        env->hflags |= HF_SMAP_MASK;
+    }
 
     env->cr[4] = new_cr4;
 }
@@ -579,7 +518,7 @@ int cpu_x86_handle_mmu_fault(CPUX86State *env, target_ulong addr,
     uint64_t ptep, pte;
     target_ulong pde_addr, pte_addr;
     int error_code, is_dirty, prot, page_size, is_write, is_user;
-    target_phys_addr_t paddr;
+    hwaddr paddr;
     uint32_t page_offset;
     target_ulong vaddr, virt_addr;
 
@@ -677,17 +616,38 @@ int cpu_x86_handle_mmu_fault(CPUX86State *env, target_ulong addr,
             /* 2 MB page */
             page_size = 2048 * 1024;
             ptep ^= PG_NX_MASK;
-            if ((ptep & PG_NX_MASK) && is_write1 == 2)
+            if ((ptep & PG_NX_MASK) && is_write1 == 2) {
                 goto do_fault_protect;
-            if (is_user) {
-                if (!(ptep & PG_USER_MASK))
+            }
+            switch (mmu_idx) {
+            case MMU_USER_IDX:
+                if (!(ptep & PG_USER_MASK)) {
                     goto do_fault_protect;
-                if (is_write && !(ptep & PG_RW_MASK))
+                }
+                if (is_write && !(ptep & PG_RW_MASK)) {
                     goto do_fault_protect;
-            } else {
+                }
+                break;
+
+            case MMU_KERNEL_IDX:
+                if (is_write1 != 2 && (env->cr[4] & CR4_SMAP_MASK) &&
+                    (ptep & PG_USER_MASK)) {
+                    goto do_fault_protect;
+                }
+                /* fall through */
+            case MMU_KSMAP_IDX:
+                if (is_write1 == 2 && (env->cr[4] & CR4_SMEP_MASK) &&
+                    (ptep & PG_USER_MASK)) {
+                    goto do_fault_protect;
+                }
                 if ((env->cr[0] & CR0_WP_MASK) &&
-                    is_write && !(ptep & PG_RW_MASK))
+                    is_write && !(ptep & PG_RW_MASK)) {
                     goto do_fault_protect;
+                }
+                break;
+
+            default: /* cannot happen */
+                break;
             }
             is_dirty = is_write && !(pde & PG_DIRTY_MASK);
             if (!(pde & PG_ACCESSED_MASK) || is_dirty) {
@@ -721,15 +681,35 @@ int cpu_x86_handle_mmu_fault(CPUX86State *env, target_ulong addr,
             ptep ^= PG_NX_MASK;
             if ((ptep & PG_NX_MASK) && is_write1 == 2)
                 goto do_fault_protect;
-            if (is_user) {
-                if (!(ptep & PG_USER_MASK))
+            switch (mmu_idx) {
+            case MMU_USER_IDX:
+                if (!(ptep & PG_USER_MASK)) {
                     goto do_fault_protect;
-                if (is_write && !(ptep & PG_RW_MASK))
+                }
+                if (is_write && !(ptep & PG_RW_MASK)) {
                     goto do_fault_protect;
-            } else {
+                }
+                break;
+
+            case MMU_KERNEL_IDX:
+                if (is_write1 != 2 && (env->cr[4] & CR4_SMAP_MASK) &&
+                    (ptep & PG_USER_MASK)) {
+                    goto do_fault_protect;
+                }
+                /* fall through */
+            case MMU_KSMAP_IDX:
+                if (is_write1 == 2 && (env->cr[4] & CR4_SMEP_MASK) &&
+                    (ptep & PG_USER_MASK)) {
+                    goto do_fault_protect;
+                }
                 if ((env->cr[0] & CR0_WP_MASK) &&
-                    is_write && !(ptep & PG_RW_MASK))
+                    is_write && !(ptep & PG_RW_MASK)) {
                     goto do_fault_protect;
+                }
+                break;
+
+            default: /* cannot happen */
+                break;
             }
             is_dirty = is_write && !(pte & PG_DIRTY_MASK);
             if (!(pte & PG_ACCESSED_MASK) || is_dirty) {
@@ -756,15 +736,35 @@ int cpu_x86_handle_mmu_fault(CPUX86State *env, target_ulong addr,
         /* if PSE bit is set, then we use a 4MB page */
         if ((pde & PG_PSE_MASK) && (env->cr[4] & CR4_PSE_MASK)) {
             page_size = 4096 * 1024;
-            if (is_user) {
-                if (!(pde & PG_USER_MASK))
+            switch (mmu_idx) {
+            case MMU_USER_IDX:
+                if (!(pde & PG_USER_MASK)) {
                     goto do_fault_protect;
-                if (is_write && !(pde & PG_RW_MASK))
+                }
+                if (is_write && !(pde & PG_RW_MASK)) {
                     goto do_fault_protect;
-            } else {
+                }
+                break;
+
+            case MMU_KERNEL_IDX:
+                if (is_write1 != 2 && (env->cr[4] & CR4_SMAP_MASK) &&
+                    (pde & PG_USER_MASK)) {
+                    goto do_fault_protect;
+                }
+                /* fall through */
+            case MMU_KSMAP_IDX:
+                if (is_write1 == 2 && (env->cr[4] & CR4_SMEP_MASK) &&
+                    (pde & PG_USER_MASK)) {
+                    goto do_fault_protect;
+                }
                 if ((env->cr[0] & CR0_WP_MASK) &&
-                    is_write && !(pde & PG_RW_MASK))
+                    is_write && !(pde & PG_RW_MASK)) {
                     goto do_fault_protect;
+                }
+                break;
+
+            default: /* cannot happen */
+                break;
             }
             is_dirty = is_write && !(pde & PG_DIRTY_MASK);
             if (!(pde & PG_ACCESSED_MASK) || is_dirty) {
@@ -793,15 +793,35 @@ int cpu_x86_handle_mmu_fault(CPUX86State *env, target_ulong addr,
             }
             /* combine pde and pte user and rw protections */
             ptep = pte & pde;
-            if (is_user) {
-                if (!(ptep & PG_USER_MASK))
+            switch (mmu_idx) {
+            case MMU_USER_IDX:
+                if (!(ptep & PG_USER_MASK)) {
                     goto do_fault_protect;
-                if (is_write && !(ptep & PG_RW_MASK))
+                }
+                if (is_write && !(ptep & PG_RW_MASK)) {
                     goto do_fault_protect;
-            } else {
+                }
+                break;
+
+            case MMU_KERNEL_IDX:
+                if (is_write1 != 2 && (env->cr[4] & CR4_SMAP_MASK) &&
+                    (ptep & PG_USER_MASK)) {
+                    goto do_fault_protect;
+                }
+                /* fall through */
+            case MMU_KSMAP_IDX:
+                if (is_write1 == 2 && (env->cr[4] & CR4_SMEP_MASK) &&
+                    (ptep & PG_USER_MASK)) {
+                    goto do_fault_protect;
+                }
                 if ((env->cr[0] & CR0_WP_MASK) &&
-                    is_write && !(ptep & PG_RW_MASK))
+                    is_write && !(ptep & PG_RW_MASK)) {
                     goto do_fault_protect;
+                }
+                break;
+
+            default: /* cannot happen */
+                break;
             }
             is_dirty = is_write && !(pte & PG_DIRTY_MASK);
             if (!(pte & PG_ACCESSED_MASK) || is_dirty) {
@@ -848,8 +868,9 @@ int cpu_x86_handle_mmu_fault(CPUX86State *env, target_ulong addr,
     if (is_user)
         error_code |= PG_ERROR_U_MASK;
     if (is_write1 == 2 &&
-        (env->efer & MSR_EFER_NXE) &&
-        (env->cr[4] & CR4_PAE_MASK))
+        (((env->efer & MSR_EFER_NXE) &&
+          (env->cr[4] & CR4_PAE_MASK)) ||
+         (env->cr[4] & CR4_SMEP_MASK)))
         error_code |= PG_ERROR_I_D_MASK;
     if (env->intercept_exceptions & (1 << EXCP0E_PAGE)) {
         /* cr2 is not modified in case of exceptions */
@@ -863,15 +884,20 @@ int cpu_x86_handle_mmu_fault(CPUX86State *env, target_ulong addr,
     return 1;
 }
 
-target_phys_addr_t cpu_get_phys_page_debug(CPUState *env, target_ulong addr)
+hwaddr x86_cpu_get_phys_page_debug(CPUState *cs, vaddr addr)
 {
+    X86CPU *cpu = X86_CPU(cs);
+    CPUX86State *env = &cpu->env;
     target_ulong pde_addr, pte_addr;
     uint64_t pte;
-    target_phys_addr_t paddr;
+    hwaddr paddr;
     uint32_t page_offset;
     int page_size;
 
-    if (env->cr[4] & CR4_PAE_MASK) {
+    if (!(env->cr[0] & CR0_PG_MASK)) {
+        pte = addr & env->a20_mask;
+        page_size = 4096;
+    } else if (env->cr[4] & CR4_PAE_MASK) {
         target_ulong pdpe_addr;
         uint64_t pde, pdpe;
 
@@ -891,8 +917,8 @@ target_phys_addr_t cpu_get_phys_page_debug(CPUState *env, target_ulong addr)
             if (!(pml4e & PG_PRESENT_MASK))
                 return -1;
 
-            pdpe_addr = ((pml4e & ~0xfff) + (((addr >> 30) & 0x1ff) << 3)) &
-                env->a20_mask;
+            pdpe_addr = ((pml4e & ~0xfff & ~(PG_NX_MASK | PG_HI_USER_MASK)) +
+                         (((addr >> 30) & 0x1ff) << 3)) & env->a20_mask;
             pdpe = ldq_phys(pdpe_addr);
             if (!(pdpe & PG_PRESENT_MASK))
                 return -1;
@@ -906,8 +932,8 @@ target_phys_addr_t cpu_get_phys_page_debug(CPUState *env, target_ulong addr)
                 return -1;
         }
 
-        pde_addr = ((pdpe & ~0xfff) + (((addr >> 21) & 0x1ff) << 3)) &
-            env->a20_mask;
+        pde_addr = ((pdpe & ~0xfff & ~(PG_NX_MASK | PG_HI_USER_MASK)) +
+                    (((addr >> 21) & 0x1ff) << 3)) & env->a20_mask;
         pde = ldq_phys(pde_addr);
         if (!(pde & PG_PRESENT_MASK)) {
             return -1;
@@ -918,36 +944,32 @@ target_phys_addr_t cpu_get_phys_page_debug(CPUState *env, target_ulong addr)
             pte = pde & ~( (page_size - 1) & ~0xfff); /* align to page_size */
         } else {
             /* 4 KB page */
-            pte_addr = ((pde & ~0xfff) + (((addr >> 12) & 0x1ff) << 3)) &
-                env->a20_mask;
+            pte_addr = ((pde & ~0xfff & ~(PG_NX_MASK | PG_HI_USER_MASK)) +
+                        (((addr >> 12) & 0x1ff) << 3)) & env->a20_mask;
             page_size = 4096;
             pte = ldq_phys(pte_addr);
         }
+        pte &= ~(PG_NX_MASK | PG_HI_USER_MASK);
         if (!(pte & PG_PRESENT_MASK))
             return -1;
     } else {
         uint32_t pde;
 
-        if (!(env->cr[0] & CR0_PG_MASK)) {
-            pte = addr;
-            page_size = 4096;
+        /* page directory entry */
+        pde_addr = ((env->cr[3] & ~0xfff) + ((addr >> 20) & 0xffc)) & env->a20_mask;
+        pde = ldl_phys(pde_addr);
+        if (!(pde & PG_PRESENT_MASK))
+            return -1;
+        if ((pde & PG_PSE_MASK) && (env->cr[4] & CR4_PSE_MASK)) {
+            pte = pde & ~0x003ff000; /* align to 4MB */
+            page_size = 4096 * 1024;
         } else {
             /* page directory entry */
-            pde_addr = ((env->cr[3] & ~0xfff) + ((addr >> 20) & 0xffc)) & env->a20_mask;
-            pde = ldl_phys(pde_addr);
-            if (!(pde & PG_PRESENT_MASK))
+            pte_addr = ((pde & ~0xfff) + ((addr >> 10) & 0xffc)) & env->a20_mask;
+            pte = ldl_phys(pte_addr);
+            if (!(pte & PG_PRESENT_MASK))
                 return -1;
-            if ((pde & PG_PSE_MASK) && (env->cr[4] & CR4_PSE_MASK)) {
-                pte = pde & ~0x003ff000; /* align to 4MB */
-                page_size = 4096 * 1024;
-            } else {
-                /* page directory entry */
-                pte_addr = ((pde & ~0xfff) + ((addr >> 10) & 0xffc)) & env->a20_mask;
-                pte = ldl_phys(pte_addr);
-                if (!(pte & PG_PRESENT_MASK))
-                    return -1;
-                page_size = 4096;
-            }
+            page_size = 4096;
         }
         pte = pte & env->a20_mask;
     }
@@ -957,106 +979,129 @@ target_phys_addr_t cpu_get_phys_page_debug(CPUState *env, target_ulong addr)
     return paddr;
 }
 
-void hw_breakpoint_insert(CPUState *env, int index)
+void hw_breakpoint_insert(CPUX86State *env, int index)
 {
-    int type, err = 0;
+    int type = 0, err = 0;
 
     switch (hw_breakpoint_type(env->dr[7], index)) {
-    case 0:
-        if (hw_breakpoint_enabled(env->dr[7], index))
+    case DR7_TYPE_BP_INST:
+        if (hw_breakpoint_enabled(env->dr[7], index)) {
             err = cpu_breakpoint_insert(env, env->dr[index], BP_CPU,
                                         &env->cpu_breakpoint[index]);
+        }
         break;
-    case 1:
+    case DR7_TYPE_DATA_WR:
         type = BP_CPU | BP_MEM_WRITE;
-        goto insert_wp;
-    case 2:
-         /* No support for I/O watchpoints yet */
         break;
-    case 3:
+    case DR7_TYPE_IO_RW:
+        /* No support for I/O watchpoints yet */
+        break;
+    case DR7_TYPE_DATA_RW:
         type = BP_CPU | BP_MEM_ACCESS;
-    insert_wp:
+        break;
+    }
+
+    if (type != 0) {
         err = cpu_watchpoint_insert(env, env->dr[index],
                                     hw_breakpoint_len(env->dr[7], index),
                                     type, &env->cpu_watchpoint[index]);
-        break;
     }
-    if (err)
+
+    if (err) {
         env->cpu_breakpoint[index] = NULL;
+    }
 }
 
-void hw_breakpoint_remove(CPUState *env, int index)
+void hw_breakpoint_remove(CPUX86State *env, int index)
 {
     if (!env->cpu_breakpoint[index])
         return;
     switch (hw_breakpoint_type(env->dr[7], index)) {
-    case 0:
-        if (hw_breakpoint_enabled(env->dr[7], index))
+    case DR7_TYPE_BP_INST:
+        if (hw_breakpoint_enabled(env->dr[7], index)) {
             cpu_breakpoint_remove_by_ref(env, env->cpu_breakpoint[index]);
+        }
         break;
-    case 1:
-    case 3:
+    case DR7_TYPE_DATA_WR:
+    case DR7_TYPE_DATA_RW:
         cpu_watchpoint_remove_by_ref(env, env->cpu_watchpoint[index]);
         break;
-    case 2:
+    case DR7_TYPE_IO_RW:
         /* No support for I/O watchpoints yet */
         break;
     }
 }
 
-int check_hw_breakpoints(CPUState *env, int force_dr6_update)
+bool check_hw_breakpoints(CPUX86State *env, bool force_dr6_update)
 {
     target_ulong dr6;
-    int reg, type;
-    int hit_enabled = 0;
+    int reg;
+    bool hit_enabled = false;
 
     dr6 = env->dr[6] & ~0xf;
-    for (reg = 0; reg < 4; reg++) {
-        type = hw_breakpoint_type(env->dr[7], reg);
-        if ((type == 0 && env->dr[reg] == env->eip) ||
-            ((type & 1) && env->cpu_watchpoint[reg] &&
-             (env->cpu_watchpoint[reg]->flags & BP_WATCHPOINT_HIT))) {
+    for (reg = 0; reg < DR7_MAX_BP; reg++) {
+        bool bp_match = false;
+        bool wp_match = false;
+
+        switch (hw_breakpoint_type(env->dr[7], reg)) {
+        case DR7_TYPE_BP_INST:
+            if (env->dr[reg] == env->eip) {
+                bp_match = true;
+            }
+            break;
+        case DR7_TYPE_DATA_WR:
+        case DR7_TYPE_DATA_RW:
+            if (env->cpu_watchpoint[reg] &&
+                env->cpu_watchpoint[reg]->flags & BP_WATCHPOINT_HIT) {
+                wp_match = true;
+            }
+            break;
+        case DR7_TYPE_IO_RW:
+            break;
+        }
+        if (bp_match || wp_match) {
             dr6 |= 1 << reg;
-            if (hw_breakpoint_enabled(env->dr[7], reg))
-                hit_enabled = 1;
+            if (hw_breakpoint_enabled(env->dr[7], reg)) {
+                hit_enabled = true;
+            }
         }
     }
-    if (hit_enabled || force_dr6_update)
+
+    if (hit_enabled || force_dr6_update) {
         env->dr[6] = dr6;
+    }
+
     return hit_enabled;
 }
 
-static CPUDebugExcpHandler *prev_debug_excp_handler;
-
-static void breakpoint_handler(CPUState *env)
+void breakpoint_handler(CPUX86State *env)
 {
     CPUBreakpoint *bp;
 
     if (env->watchpoint_hit) {
         if (env->watchpoint_hit->flags & BP_CPU) {
             env->watchpoint_hit = NULL;
-            if (check_hw_breakpoints(env, 0))
-                raise_exception_env(EXCP01_DB, env);
-            else
+            if (check_hw_breakpoints(env, false)) {
+                raise_exception(env, EXCP01_DB);
+            } else {
                 cpu_resume_from_signal(env, NULL);
+            }
         }
     } else {
         QTAILQ_FOREACH(bp, &env->breakpoints, entry)
             if (bp->pc == env->eip) {
                 if (bp->flags & BP_CPU) {
-                    check_hw_breakpoints(env, 1);
-                    raise_exception_env(EXCP01_DB, env);
+                    check_hw_breakpoints(env, true);
+                    raise_exception(env, EXCP01_DB);
                 }
                 break;
             }
     }
-    if (prev_debug_excp_handler)
-        prev_debug_excp_handler(env);
 }
 
 typedef struct MCEInjectionParams {
     Monitor *mon;
-    CPUState *env;
+    X86CPU *cpu;
     int bank;
     uint64_t status;
     uint64_t mcg_status;
@@ -1068,10 +1113,11 @@ typedef struct MCEInjectionParams {
 static void do_inject_x86_mce(void *data)
 {
     MCEInjectionParams *params = data;
-    CPUState *cenv = params->env;
+    CPUX86State *cenv = &params->cpu->env;
+    CPUState *cpu = CPU(params->cpu);
     uint64_t *banks = cenv->mce_banks + 4 * params->bank;
 
-    cpu_synchronize_state(cenv);
+    cpu_synchronize_state(cpu);
 
     /*
      * If there is an MCE exception being processed, ignore this SRAO MCE
@@ -1091,7 +1137,7 @@ static void do_inject_x86_mce(void *data)
         if ((cenv->mcg_cap & MCG_CTL_P) && cenv->mcg_ctl != ~(uint64_t)0) {
             monitor_printf(params->mon,
                            "CPU %d: Uncorrected error reporting disabled\n",
-                           cenv->cpu_index);
+                           cpu->cpu_index);
             return;
         }
 
@@ -1103,7 +1149,7 @@ static void do_inject_x86_mce(void *data)
             monitor_printf(params->mon,
                            "CPU %d: Uncorrected error reporting disabled for"
                            " bank %d\n",
-                           cenv->cpu_index, params->bank);
+                           cpu->cpu_index, params->bank);
             return;
         }
 
@@ -1112,7 +1158,7 @@ static void do_inject_x86_mce(void *data)
             monitor_printf(params->mon,
                            "CPU %d: Previous MCE still in progress, raising"
                            " triple fault\n",
-                           cenv->cpu_index);
+                           cpu->cpu_index);
             qemu_log_mask(CPU_LOG_RESET, "Triple fault\n");
             qemu_system_reset_request();
             return;
@@ -1124,7 +1170,7 @@ static void do_inject_x86_mce(void *data)
         banks[3] = params->misc;
         cenv->mcg_status = params->mcg_status;
         banks[1] = params->status;
-        cpu_interrupt(cenv, CPU_INTERRUPT_MCE);
+        cpu_interrupt(cpu, CPU_INTERRUPT_MCE);
     } else if (!(banks[1] & MCI_STATUS_VAL)
                || !(banks[1] & MCI_STATUS_UC)) {
         if (banks[1] & MCI_STATUS_VAL) {
@@ -1138,13 +1184,15 @@ static void do_inject_x86_mce(void *data)
     }
 }
 
-void cpu_x86_inject_mce(Monitor *mon, CPUState *cenv, int bank,
+void cpu_x86_inject_mce(Monitor *mon, X86CPU *cpu, int bank,
                         uint64_t status, uint64_t mcg_status, uint64_t addr,
                         uint64_t misc, int flags)
 {
+    CPUState *cs = CPU(cpu);
+    CPUX86State *cenv = &cpu->env;
     MCEInjectionParams params = {
         .mon = mon,
-        .env = cenv,
+        .cpu = cpu,
         .bank = bank,
         .status = status,
         .mcg_status = mcg_status,
@@ -1153,7 +1201,6 @@ void cpu_x86_inject_mce(Monitor *mon, CPUState *cenv, int bank,
         .flags = flags,
     };
     unsigned bank_num = cenv->mcg_cap & 0xff;
-    CPUState *env;
 
     if (!cenv->mcg_cap) {
         monitor_printf(mon, "MCE injection not supported\n");
@@ -1173,43 +1220,45 @@ void cpu_x86_inject_mce(Monitor *mon, CPUState *cenv, int bank,
         return;
     }
 
-    run_on_cpu(cenv, do_inject_x86_mce, &params);
+    run_on_cpu(cs, do_inject_x86_mce, &params);
     if (flags & MCE_INJECT_BROADCAST) {
+        CPUState *other_cs;
+
         params.bank = 1;
         params.status = MCI_STATUS_VAL | MCI_STATUS_UC;
         params.mcg_status = MCG_STATUS_MCIP | MCG_STATUS_RIPV;
         params.addr = 0;
         params.misc = 0;
-        for (env = first_cpu; env != NULL; env = env->next_cpu) {
-            if (cenv == env) {
+        CPU_FOREACH(other_cs) {
+            if (other_cs == cs) {
                 continue;
             }
-            params.env = env;
-            run_on_cpu(cenv, do_inject_x86_mce, &params);
+            params.cpu = X86_CPU(other_cs);
+            run_on_cpu(other_cs, do_inject_x86_mce, &params);
         }
+    }
+}
+
+void cpu_report_tpr_access(CPUX86State *env, TPRAccess access)
+{
+    if (kvm_enabled()) {
+        env->tpr_access_type = access;
+
+        cpu_interrupt(CPU(x86_env_get_cpu(env)), CPU_INTERRUPT_TPR);
+    } else {
+        cpu_restore_state(env, env->mem_io_pc);
+
+        apic_handle_tpr_access_report(env->apic_state, env->eip, access);
     }
 }
 #endif /* !CONFIG_USER_ONLY */
-
-static void mce_init(CPUX86State *cenv)
-{
-    unsigned int bank;
-
-    if (((cenv->cpuid_version >> 8) & 0xf) >= 6
-        && (cenv->cpuid_features & (CPUID_MCE | CPUID_MCA)) ==
-            (CPUID_MCE | CPUID_MCA)) {
-        cenv->mcg_cap = MCE_CAP_DEF | MCE_BANKS_DEF;
-        cenv->mcg_ctl = ~(uint64_t)0;
-        for (bank = 0; bank < MCE_BANKS_DEF; bank++) {
-            cenv->mce_banks[bank * 4] = ~(uint64_t)0;
-        }
-    }
-}
 
 int cpu_x86_get_descr_debug(CPUX86State *env, unsigned int selector,
                             target_ulong *base, unsigned int *limit,
                             unsigned int *flags)
 {
+    X86CPU *cpu = x86_env_get_cpu(env);
+    CPUState *cs = CPU(cpu);
     SegmentCache *dt;
     target_ulong ptr;
     uint32_t e1, e2;
@@ -1222,8 +1271,8 @@ int cpu_x86_get_descr_debug(CPUX86State *env, unsigned int selector,
     index = selector & ~7;
     ptr = dt->base + index;
     if ((index + 7) > dt->limit
-        || cpu_memory_rw_debug(env, ptr, (uint8_t *)&e1, sizeof(e1), 0) != 0
-        || cpu_memory_rw_debug(env, ptr+4, (uint8_t *)&e2, sizeof(e2), 0) != 0)
+        || cpu_memory_rw_debug(cs, ptr, (uint8_t *)&e1, sizeof(e1), 0) != 0
+        || cpu_memory_rw_debug(cs, ptr+4, (uint8_t *)&e2, sizeof(e2), 0) != 0)
         return 0;
 
     *base = ((e1 >> 16) | ((e2 & 0xff) << 16) | (e2 & 0xff000000));
@@ -1235,58 +1284,31 @@ int cpu_x86_get_descr_debug(CPUX86State *env, unsigned int selector,
     return 1;
 }
 
-CPUX86State *cpu_x86_init(const char *cpu_model)
-{
-    CPUX86State *env;
-    static int inited;
-
-    env = g_malloc0(sizeof(CPUX86State));
-    cpu_exec_init(env);
-    env->cpu_model_str = cpu_model;
-
-    /* init various static tables used in TCG mode */
-    if (tcg_enabled() && !inited) {
-        inited = 1;
-        optimize_flags_init();
-#ifndef CONFIG_USER_ONLY
-        prev_debug_excp_handler =
-            cpu_set_debug_excp_handler(breakpoint_handler);
-#endif
-    }
-    if (cpu_x86_register(env, cpu_model) < 0) {
-        cpu_x86_close(env);
-        return NULL;
-    }
-    env->cpuid_apic_id = env->cpu_index;
-    mce_init(env);
-
-    qemu_init_vcpu(env);
-
-    return env;
-}
-
 #if !defined(CONFIG_USER_ONLY)
-void do_cpu_init(CPUState *env)
+void do_cpu_init(X86CPU *cpu)
 {
-    int sipi = env->interrupt_request & CPU_INTERRUPT_SIPI;
+    CPUState *cs = CPU(cpu);
+    CPUX86State *env = &cpu->env;
+    int sipi = cs->interrupt_request & CPU_INTERRUPT_SIPI;
     uint64_t pat = env->pat;
 
-    cpu_reset(env);
-    env->interrupt_request = sipi;
+    cpu_reset(cs);
+    cs->interrupt_request = sipi;
     env->pat = pat;
     apic_init_reset(env->apic_state);
-    env->halted = !cpu_is_bsp(env);
 }
 
-void do_cpu_sipi(CPUState *env)
+void do_cpu_sipi(X86CPU *cpu)
 {
+    CPUX86State *env = &cpu->env;
+
     apic_sipi(env->apic_state);
 }
 #else
-void do_cpu_init(CPUState *env)
+void do_cpu_init(X86CPU *cpu)
 {
 }
-void do_cpu_sipi(CPUState *env)
+void do_cpu_sipi(X86CPU *cpu)
 {
 }
 #endif

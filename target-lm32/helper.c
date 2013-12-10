@@ -17,15 +17,10 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <stdio.h>
-#include <string.h>
-#include <assert.h>
-
-#include "config.h"
 #include "cpu.h"
-#include "host-utils.h"
+#include "qemu/host-utils.h"
 
-int cpu_lm32_handle_mmu_fault(CPUState *env, target_ulong address, int rw,
+int cpu_lm32_handle_mmu_fault(CPULM32State *env, target_ulong address, int rw,
                               int mmu_idx)
 {
     int prot;
@@ -42,13 +37,23 @@ int cpu_lm32_handle_mmu_fault(CPUState *env, target_ulong address, int rw,
     return 0;
 }
 
-target_phys_addr_t cpu_get_phys_page_debug(CPUState *env, target_ulong addr)
+hwaddr lm32_cpu_get_phys_page_debug(CPUState *cs, vaddr addr)
 {
-    return addr & TARGET_PAGE_MASK;
+    LM32CPU *cpu = LM32_CPU(cs);
+
+    addr &= TARGET_PAGE_MASK;
+    if (cpu->env.flags & LM32_FLAG_IGNORE_MSB) {
+        return addr & 0x7fffffff;
+    } else {
+        return addr;
+    }
 }
 
-void do_interrupt(CPUState *env)
+void lm32_cpu_do_interrupt(CPUState *cs)
 {
+    LM32CPU *cpu = LM32_CPU(cs);
+    CPULM32State *env = &cpu->env;
+
     qemu_log_mask(CPU_LOG_INT,
             "exception at pc=%x type=%x\n", env->pc, env->exception_index);
 
@@ -67,7 +72,7 @@ void do_interrupt(CPUState *env)
         } else {
             env->pc = env->eba + (env->exception_index * 32);
         }
-        log_cpu_state_mask(CPU_LOG_INT, env, 0);
+        log_cpu_state_mask(CPU_LOG_INT, cs, 0);
         break;
     case EXCP_BREAKPOINT:
     case EXCP_WATCHPOINT:
@@ -76,7 +81,7 @@ void do_interrupt(CPUState *env)
         env->ie |= (env->ie & IE_IE) ? IE_BIE : 0;
         env->ie &= ~IE_IE;
         env->pc = env->deba + (env->exception_index * 32);
-        log_cpu_state_mask(CPU_LOG_INT, env, 0);
+        log_cpu_state_mask(CPU_LOG_INT, cs, 0);
         break;
     default:
         cpu_abort(env, "unhandled exception type=%d\n",
@@ -197,41 +202,34 @@ static uint32_t cfg_by_def(const LM32Def *def)
     return cfg;
 }
 
-CPUState *cpu_lm32_init(const char *cpu_model)
+LM32CPU *cpu_lm32_init(const char *cpu_model)
 {
-    CPUState *env;
+    LM32CPU *cpu;
+    CPULM32State *env;
     const LM32Def *def;
-    static int tcg_initialized;
 
     def = cpu_lm32_find_by_name(cpu_model);
     if (!def) {
         return NULL;
     }
 
-    env = g_malloc0(sizeof(CPUState));
+    cpu = LM32_CPU(object_new(TYPE_LM32_CPU));
+    env = &cpu->env;
 
     env->features = def->features;
     env->num_bps = def->num_breakpoints;
     env->num_wps = def->num_watchpoints;
     env->cfg = cfg_by_def(def);
-    env->flags = 0;
 
-    cpu_exec_init(env);
-    cpu_reset(env);
-    qemu_init_vcpu(env);
+    object_property_set_bool(OBJECT(cpu), true, "realized", NULL);
 
-    if (!tcg_initialized) {
-        tcg_initialized = 1;
-        lm32_translate_init();
-    }
-
-    return env;
+    return cpu;
 }
 
 /* Some soc ignores the MSB on the address bus. Thus creating a shadow memory
  * area. As a general rule, 0x00000000-0x7fffffff is cached, whereas
  * 0x80000000-0xffffffff is not cached and used to access IO devices. */
-void cpu_lm32_set_phys_msb_ignore(CPUState *env, int value)
+void cpu_lm32_set_phys_msb_ignore(CPULM32State *env, int value)
 {
     if (value) {
         env->flags |= LM32_FLAG_IGNORE_MSB;
@@ -239,17 +237,3 @@ void cpu_lm32_set_phys_msb_ignore(CPUState *env, int value)
         env->flags &= ~LM32_FLAG_IGNORE_MSB;
     }
 }
-
-void cpu_reset(CPUState *env)
-{
-    if (qemu_loglevel_mask(CPU_LOG_RESET)) {
-        qemu_log("CPU Reset (CPU %d)\n", env->cpu_index);
-        log_cpu_state(env, 0);
-    }
-
-    tlb_flush(env, 1);
-
-    /* reset cpu state */
-    memset(env, 0, offsetof(CPULM32State, breakpoints));
-}
-

@@ -12,7 +12,7 @@
  */
 #ifndef QEMU_FSDEV_H
 #define QEMU_FSDEV_H
-#include "qemu-option.h"
+#include "qemu/option.h"
 #include "file-op-9p.h"
 
 
@@ -34,16 +34,6 @@ typedef struct FsDriverTable {
     FileOperations *ops;
 } FsDriverTable;
 
-/*
- * Structure to store the various fsdev's passed through command line.
- */
-typedef struct FsDriverEntry {
-    char *fsdev_id;
-    char *path;
-    int export_flags;
-    FileOperations *ops;
-} FsDriverEntry;
-
 typedef struct FsDriverListEntry {
     FsDriverEntry fse;
     QTAILQ_ENTRY(FsDriverListEntry) next;
@@ -54,4 +44,5 @@ FsDriverEntry *get_fsdev_fsentry(char *id);
 extern FileOperations local_ops;
 extern FileOperations handle_ops;
 extern FileOperations synth_ops;
+extern FileOperations proxy_ops;
 #endif

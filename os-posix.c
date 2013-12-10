@@ -36,17 +36,16 @@
 
 /* Needed early for CONFIG_BSD etc. */
 #include "config-host.h"
-#include "sysemu.h"
+#include "sysemu/sysemu.h"
 #include "net/slirp.h"
 #include "qemu-options.h"
 
 #ifdef CONFIG_LINUX
 #include <sys/prctl.h>
-#include <sys/syscall.h>
 #endif
 
-#ifdef CONFIG_EVENTFD
-#include <sys/eventfd.h>
+#ifdef __FreeBSD__
+#include <sys/sysctl.h>
 #endif
 
 static struct passwd *user_pwd;
@@ -149,8 +148,7 @@ void os_set_proc_name(const char *s)
     char name[16];
     if (!s)
         return;
-    name[sizeof(name) - 1] = 0;
-    strncpy(name, s, sizeof(name));
+    pstrcpy(name, sizeof(name), s);
     /* Could rewrite argv[0] too, but that's a bit more complicated.
        This simple way is enough for `top'. */
     if (prctl(PR_SET_NAME, name)) {
@@ -189,8 +187,12 @@ void os_parse_cmd_args(int index, const char *optarg)
     case QEMU_OPTION_daemonize:
         daemonize = 1;
         break;
+#if defined(CONFIG_LINUX)
+    case QEMU_OPTION_enablefips:
+        fips_set_state(true);
+        break;
+#endif
     }
-    return;
 }
 
 static void change_process_uid(void)
@@ -333,34 +335,6 @@ void os_set_line_buffering(void)
     setvbuf(stdout, NULL, _IOLBF, 0);
 }
 
-/*
- * Creates an eventfd that looks like a pipe and has EFD_CLOEXEC set.
- */
-int qemu_eventfd(int fds[2])
-{
-#ifdef CONFIG_EVENTFD
-    int ret;
-
-    ret = eventfd(0, 0);
-    if (ret >= 0) {
-        fds[0] = ret;
-        qemu_set_cloexec(ret);
-        if ((fds[1] = dup(ret)) == -1) {
-            close(ret);
-            return -1;
-        }
-        qemu_set_cloexec(fds[1]);
-        return 0;
-    }
-
-    if (errno != ENOSYS) {
-        return -1;
-    }
-#endif
-
-    return qemu_pipe(fds);
-}
-
 int qemu_create_pidfile(const char *filename)
 {
     char buffer[128];
@@ -381,15 +355,23 @@ int qemu_create_pidfile(const char *filename)
         return -1;
     }
 
-    close(fd);
+    /* keep pidfile open & locked forever */
     return 0;
 }
 
-int qemu_get_thread_id(void)
+bool is_daemonized(void)
 {
-#if defined (__linux__)
-    return syscall(SYS_gettid);
-#else
-    return getpid();
-#endif
+    return daemonize;
+}
+
+int os_mlock(void)
+{
+    int ret = 0;
+
+    ret = mlockall(MCL_CURRENT | MCL_FUTURE);
+    if (ret < 0) {
+        perror("mlockall");
+    }
+
+    return ret;
 }

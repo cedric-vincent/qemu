@@ -22,14 +22,16 @@
  * THE SOFTWARE.
  */
 
-#include "dump.h"
+#include "clients.h"
 #include "qemu-common.h"
-#include "qemu-error.h"
-#include "qemu-log.h"
-#include "qemu-timer.h"
+#include "qemu/error-report.h"
+#include "qemu/log.h"
+#include "qemu/timer.h"
+#include "hub.h"
 
 typedef struct DumpState {
-    VLANClientState nc;
+    NetClientState nc;
+    int64_t start_ts;
     int fd;
     int pcap_caplen;
 } DumpState;
@@ -55,7 +57,7 @@ struct pcap_sf_pkthdr {
     uint32_t len;
 };
 
-static ssize_t dump_receive(VLANClientState *nc, const uint8_t *buf, size_t size)
+static ssize_t dump_receive(NetClientState *nc, const uint8_t *buf, size_t size)
 {
     DumpState *s = DO_UPCAST(DumpState, nc, nc);
     struct pcap_sf_pkthdr hdr;
@@ -67,10 +69,10 @@ static ssize_t dump_receive(VLANClientState *nc, const uint8_t *buf, size_t size
         return size;
     }
 
-    ts = muldiv64(qemu_get_clock_ns(vm_clock), 1000000, get_ticks_per_sec());
+    ts = muldiv64(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), 1000000, get_ticks_per_sec());
     caplen = size > s->pcap_caplen ? s->pcap_caplen : size;
 
-    hdr.ts.tv_sec = ts / 1000000;
+    hdr.ts.tv_sec = ts / 1000000 + s->start_ts;
     hdr.ts.tv_usec = ts % 1000000;
     hdr.caplen = caplen;
     hdr.len = size;
@@ -84,7 +86,7 @@ static ssize_t dump_receive(VLANClientState *nc, const uint8_t *buf, size_t size
     return size;
 }
 
-static void dump_cleanup(VLANClientState *nc)
+static void dump_cleanup(NetClientState *nc)
 {
     DumpState *s = DO_UPCAST(DumpState, nc, nc);
 
@@ -92,21 +94,22 @@ static void dump_cleanup(VLANClientState *nc)
 }
 
 static NetClientInfo net_dump_info = {
-    .type = NET_CLIENT_TYPE_DUMP,
+    .type = NET_CLIENT_OPTIONS_KIND_DUMP,
     .size = sizeof(DumpState),
     .receive = dump_receive,
     .cleanup = dump_cleanup,
 };
 
-static int net_dump_init(VLANState *vlan, const char *device,
+static int net_dump_init(NetClientState *peer, const char *device,
                          const char *name, const char *filename, int len)
 {
     struct pcap_file_hdr hdr;
-    VLANClientState *nc;
+    NetClientState *nc;
     DumpState *s;
+    struct tm tm;
     int fd;
 
-    fd = open(filename, O_CREAT | O_WRONLY | O_BINARY, 0644);
+    fd = open(filename, O_CREAT | O_TRUNC | O_WRONLY | O_BINARY, 0644);
     if (fd < 0) {
         error_report("-net dump: can't open %s", filename);
         return -1;
@@ -126,7 +129,7 @@ static int net_dump_init(VLANState *vlan, const char *device,
         return -1;
     }
 
-    nc = qemu_new_net_client(&net_dump_info, vlan, NULL, device, name);
+    nc = qemu_new_net_client(&net_dump_info, peer, device, name);
 
     snprintf(nc->info_str, sizeof(nc->info_str),
              "dump to %s (len=%d)", filename, len);
@@ -136,24 +139,47 @@ static int net_dump_init(VLANState *vlan, const char *device,
     s->fd = fd;
     s->pcap_caplen = len;
 
+    qemu_get_timedate(&tm, 0);
+    s->start_ts = mktime(&tm);
+
     return 0;
 }
 
-int net_init_dump(QemuOpts *opts, Monitor *mon, const char *name, VLANState *vlan)
+int net_init_dump(const NetClientOptions *opts, const char *name,
+                  NetClientState *peer)
 {
     int len;
     const char *file;
     char def_file[128];
+    const NetdevDumpOptions *dump;
 
-    assert(vlan);
+    assert(opts->kind == NET_CLIENT_OPTIONS_KIND_DUMP);
+    dump = opts->dump;
 
-    file = qemu_opt_get(opts, "file");
-    if (!file) {
-        snprintf(def_file, sizeof(def_file), "qemu-vlan%d.pcap", vlan->id);
+    assert(peer);
+
+    if (dump->has_file) {
+        file = dump->file;
+    } else {
+        int id;
+        int ret;
+
+        ret = net_hub_id_for_client(peer, &id);
+        assert(ret == 0); /* peer must be on a hub */
+
+        snprintf(def_file, sizeof(def_file), "qemu-vlan%d.pcap", id);
         file = def_file;
     }
 
-    len = qemu_opt_get_size(opts, "len", 65536);
+    if (dump->has_len) {
+        if (dump->len > INT_MAX) {
+            error_report("invalid length: %"PRIu64, dump->len);
+            return -1;
+        }
+        len = dump->len;
+    } else {
+        len = 65536;
+    }
 
-    return net_dump_init(vlan, "dump", name, file, len);
+    return net_dump_init(peer, "dump", name, file, len);
 }
