@@ -26,9 +26,21 @@
 
 int gen_new_label(void);
 
-#define TCG_PLUGIN_POST_GEN_OPC(nb_args) tcg_plugin_after_gen_opc(tcg_ctx.gen_opc_ptr - 1, \
-                                                                  tcg_ctx.gen_opparam_ptr - nb_args, \
-                                                                  nb_args)
+static inline void TCG_PLUGIN_POST_GEN_OPC(size_t nb_args)
+{
+    tcg_plugin_after_gen_opc(tcg_ctx.gen_opc_ptr - 1, tcg_ctx.gen_opparam_ptr - nb_args, nb_args);
+}
+
+static inline void TCG_PLUGIN_POST_GEN_OPC2(TCGArg *opargs)
+{
+    tcg_plugin_after_gen_opc(tcg_ctx.gen_opc_ptr - 1, opargs,
+                             (opargs - tcg_ctx.gen_opparam_ptr) / sizeof(TCGArg));
+}
+
+static inline void TCG_PLUGIN_POST_GEN_OPC3(uint16_t *opcode, TCGArg *opargs, size_t nb_args)
+{
+    tcg_plugin_after_gen_opc(tcg_ctx.gen_opc_ptr - 1, opargs, nb_args);
+}
 
 static inline void tcg_gen_op0(TCGOpcode opc)
 {
@@ -381,21 +393,18 @@ static inline void tcg_gen_op6ii_i64(TCGOpcode opc, TCGv_i64 arg1,
     TCG_PLUGIN_POST_GEN_OPC(6);
 }
 
-static inline size_t tcg_add_param_i32(TCGv_i32 val)
+static inline void tcg_add_param_i32(TCGv_i32 val)
 {
     *tcg_ctx.gen_opparam_ptr++ = GET_TCGV_I32(val);
-    return 1;
 }
 
-static inline size_t tcg_add_param_i64(TCGv_i64 val)
+static inline void tcg_add_param_i64(TCGv_i64 val)
 {
 #if TCG_TARGET_REG_BITS == 32
     *tcg_ctx.gen_opparam_ptr++ = GET_TCGV_I32(TCGV_LOW(val));
     *tcg_ctx.gen_opparam_ptr++ = GET_TCGV_I32(TCGV_HIGH(val));
-    return 2;
 #else
     *tcg_ctx.gen_opparam_ptr++ = GET_TCGV_I64(val);
-    return 1;
 #endif
 }
 

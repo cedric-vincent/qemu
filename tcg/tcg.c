@@ -665,7 +665,9 @@ void tcg_gen_callN(TCGContext *s, TCGv_ptr func, unsigned int flags,
     int real_args;
     int nb_rets;
     TCGArg *nparam;
-    size_t nb_args;
+
+    uint16_t *opcode;
+    TCGArg *opargs;
 
 #if defined(TCG_TARGET_EXTEND_ARGS) && TCG_TARGET_REG_BITS == 64
     for (i = 0; i < nargs; ++i) {
@@ -683,6 +685,9 @@ void tcg_gen_callN(TCGContext *s, TCGv_ptr func, unsigned int flags,
         }
     }
 #endif /* TCG_TARGET_EXTEND_ARGS */
+
+    opcode = s->gen_opc_ptr;
+    opargs = s->gen_opparam_ptr;
 
     *s->gen_opc_ptr++ = INDEX_op_call;
     nparam = s->gen_opparam_ptr++;
@@ -750,9 +755,9 @@ void tcg_gen_callN(TCGContext *s, TCGv_ptr func, unsigned int flags,
     *nparam = (nb_rets << 16) | (real_args + 1);
 
     /* total parameters, needed to go backward in the instruction stream */
-    nb_args = 1 + nb_rets + real_args + 3;
-    *s->gen_opparam_ptr++ = nb_args;
-    TCG_PLUGIN_POST_GEN_OPC(nb_args);
+    *s->gen_opparam_ptr++ = 1 + nb_rets + real_args + 3;
+
+    TCG_PLUGIN_POST_GEN_OPC3(opcode, opargs, (s->gen_opparam_ptr - opargs) / sizeof(TCGArg));
 
 #if defined(TCG_TARGET_EXTEND_ARGS) && TCG_TARGET_REG_BITS == 64
     for (i = 0; i < nargs; ++i) {
@@ -863,18 +868,20 @@ static const TCGOpcode old_st_opc[4] = {
 
 void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
 {
-    size_t nb_args;
+    TCGArg *opargs;
 
     memop = tcg_canonicalize_memop(memop, 0, 0);
 
     if (TCG_TARGET_HAS_new_ldst) {
-        nb_args = 0;
+        opargs = tcg_ctx.gen_opparam_ptr;
+
         *tcg_ctx.gen_opc_ptr++ = INDEX_op_qemu_ld_i32;
-        nb_args += tcg_add_param_i32(val);
-        nb_args += tcg_add_param_tl(addr);
+        tcg_add_param_i32(val);
+        tcg_add_param_tl(addr);
         *tcg_ctx.gen_opparam_ptr++ = memop;
         *tcg_ctx.gen_opparam_ptr++ = idx;
-        TCG_PLUGIN_POST_GEN_OPC(nb_args);
+
+        TCG_PLUGIN_POST_GEN_OPC2(opargs);
         return;
     }
 
@@ -883,21 +890,25 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     assert(old_ld_opc[memop & MO_SSIZE] != 0);
 
     if (TCG_TARGET_REG_BITS == 32) {
-        nb_args = 0;
+        opargs = tcg_ctx.gen_opparam_ptr;
+
         *tcg_ctx.gen_opc_ptr++ = old_ld_opc[memop & MO_SSIZE];
-        nb_args += tcg_add_param_i32(val);
-        nb_args += tcg_add_param_tl(addr);
+        tcg_add_param_i32(val);
+        tcg_add_param_tl(addr);
         *tcg_ctx.gen_opparam_ptr++ = idx;
-        TCG_PLUGIN_POST_GEN_OPC(nb_args);
+
+        TCG_PLUGIN_POST_GEN_OPC2(opargs);
     } else {
         TCGv_i64 val64 = tcg_temp_new_i64();
 
-        nb_args = 0;
+        opargs = tcg_ctx.gen_opparam_ptr;
+
         *tcg_ctx.gen_opc_ptr++ = old_ld_opc[memop & MO_SSIZE];
-        nb_args += tcg_add_param_i64(val64);
-        nb_args += tcg_add_param_tl(addr);
+        tcg_add_param_i64(val64);
+        tcg_add_param_tl(addr);
         *tcg_ctx.gen_opparam_ptr++ = idx;
-        TCG_PLUGIN_POST_GEN_OPC(nb_args);
+
+        TCG_PLUGIN_POST_GEN_OPC2(opargs);
 
         tcg_gen_trunc_i64_i32(val, val64);
         tcg_temp_free_i64(val64);
@@ -906,18 +917,20 @@ void tcg_gen_qemu_ld_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
 
 void tcg_gen_qemu_st_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
 {
-    size_t nb_args;
+    TCGArg *opargs;
 
     memop = tcg_canonicalize_memop(memop, 0, 1);
 
     if (TCG_TARGET_HAS_new_ldst) {
-        nb_args = 0;
+        opargs = tcg_ctx.gen_opparam_ptr;
+
         *tcg_ctx.gen_opc_ptr++ = INDEX_op_qemu_st_i32;
-        nb_args += tcg_add_param_i32(val);
-        nb_args += tcg_add_param_tl(addr);
+        tcg_add_param_i32(val);
+        tcg_add_param_tl(addr);
         *tcg_ctx.gen_opparam_ptr++ = memop;
         *tcg_ctx.gen_opparam_ptr++ = idx;
-        TCG_PLUGIN_POST_GEN_OPC(nb_args);
+
+        TCG_PLUGIN_POST_GEN_OPC2(opargs);
         return;
     }
 
@@ -926,23 +939,27 @@ void tcg_gen_qemu_st_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     assert(old_st_opc[memop & MO_SIZE] != 0);
 
     if (TCG_TARGET_REG_BITS == 32) {
-        nb_args = 0;
+        opargs = tcg_ctx.gen_opparam_ptr;
+
         *tcg_ctx.gen_opc_ptr++ = old_st_opc[memop & MO_SIZE];
-        nb_args += tcg_add_param_i32(val);
-        nb_args += tcg_add_param_tl(addr);
+        tcg_add_param_i32(val);
+        tcg_add_param_tl(addr);
         *tcg_ctx.gen_opparam_ptr++ = idx;
-        TCG_PLUGIN_POST_GEN_OPC(nb_args);
+
+        TCG_PLUGIN_POST_GEN_OPC2(opargs);
     } else {
         TCGv_i64 val64 = tcg_temp_new_i64();
 
         tcg_gen_extu_i32_i64(val64, val);
 
-        nb_args = 0;
+        opargs = tcg_ctx.gen_opparam_ptr;
+
         *tcg_ctx.gen_opc_ptr++ = old_st_opc[memop & MO_SIZE];
-        nb_args += tcg_add_param_i64(val64);
-        nb_args += tcg_add_param_tl(addr);
+        tcg_add_param_i64(val64);
+        tcg_add_param_tl(addr);
         *tcg_ctx.gen_opparam_ptr++ = idx;
-        TCG_PLUGIN_POST_GEN_OPC(nb_args);
+
+        TCG_PLUGIN_POST_GEN_OPC2(opargs);
 
         tcg_temp_free_i64(val64);
     }
@@ -950,7 +967,7 @@ void tcg_gen_qemu_st_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
 
 void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
 {
-    size_t nb_args;
+    TCGArg *opargs;
 
     memop = tcg_canonicalize_memop(memop, 1, 0);
 
@@ -967,13 +984,15 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
 #endif
 
     if (TCG_TARGET_HAS_new_ldst) {
-        nb_args = 0;
+        opargs = tcg_ctx.gen_opparam_ptr;
+
         *tcg_ctx.gen_opc_ptr++ = INDEX_op_qemu_ld_i64;
-        nb_args += tcg_add_param_i64(val);
-        nb_args += tcg_add_param_tl(addr);
+        tcg_add_param_i64(val);
+        tcg_add_param_tl(addr);
         *tcg_ctx.gen_opparam_ptr++ = memop;
         *tcg_ctx.gen_opparam_ptr++ = idx;
-        TCG_PLUGIN_POST_GEN_OPC(nb_args);
+
+        TCG_PLUGIN_POST_GEN_OPC2(opargs);
         return;
     }
 
@@ -981,17 +1000,19 @@ void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     assert((memop & MO_BSWAP) == MO_TE || (memop & MO_SIZE) == MO_8);
     assert(old_ld_opc[memop & MO_SSIZE] != 0);
 
-    nb_args = 0;
+    opargs = tcg_ctx.gen_opparam_ptr;
+
     *tcg_ctx.gen_opc_ptr++ = old_ld_opc[memop & MO_SSIZE];
-    nb_args += tcg_add_param_i64(val);
-    nb_args += tcg_add_param_tl(addr);
+    tcg_add_param_i64(val);
+    tcg_add_param_tl(addr);
     *tcg_ctx.gen_opparam_ptr++ = idx;
-    TCG_PLUGIN_POST_GEN_OPC(nb_args);
+
+    TCG_PLUGIN_POST_GEN_OPC2(opargs);
 }
 
 void tcg_gen_qemu_st_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
 {
-    size_t nb_args;
+    TCGArg *opargs;
 
     memop = tcg_canonicalize_memop(memop, 1, 1);
 
@@ -1003,13 +1024,15 @@ void tcg_gen_qemu_st_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
 #endif
 
     if (TCG_TARGET_HAS_new_ldst) {
-        nb_args = 0;
+        opargs = tcg_ctx.gen_opparam_ptr;
+
         *tcg_ctx.gen_opc_ptr++ = INDEX_op_qemu_st_i64;
-        nb_args += tcg_add_param_i64(val);
-        nb_args += tcg_add_param_tl(addr);
+        tcg_add_param_i64(val);
+        tcg_add_param_tl(addr);
         *tcg_ctx.gen_opparam_ptr++ = memop;
         *tcg_ctx.gen_opparam_ptr++ = idx;
-        TCG_PLUGIN_POST_GEN_OPC(nb_args);
+
+        TCG_PLUGIN_POST_GEN_OPC2(opargs);
         return;
     }
 
@@ -1017,12 +1040,14 @@ void tcg_gen_qemu_st_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
     assert((memop & MO_BSWAP) == MO_TE || (memop & MO_SIZE) == MO_8);
     assert(old_st_opc[memop & MO_SIZE] != 0);
 
-    nb_args = 0;
+    opargs = tcg_ctx.gen_opparam_ptr;
+
     *tcg_ctx.gen_opc_ptr++ = old_st_opc[memop & MO_SIZE];
-    nb_args += tcg_add_param_i64(val);
-    nb_args += tcg_add_param_tl(addr);
+    tcg_add_param_i64(val);
+    tcg_add_param_tl(addr);
     *tcg_ctx.gen_opparam_ptr++ = idx;
-    TCG_PLUGIN_POST_GEN_OPC(nb_args);
+
+    TCG_PLUGIN_POST_GEN_OPC2(opargs);
 }
 
 static void tcg_reg_alloc_start(TCGContext *s)
