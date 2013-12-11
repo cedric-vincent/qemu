@@ -29,7 +29,7 @@
  *
  * int main(void)
  * {
- * 	char *device = mmap(0xCAFE0000, 1024, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
+ * 	char *device = mmap(0xCAFE0000, 1024, PROT_READ, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
  * 	return printf("printf(%p): %s\n", device, device);
  * }
  */
@@ -72,6 +72,7 @@ static void after_gen_opc(const TCGPluginInterface *tpi, const TPIOpCode *tpi_op
         size = 2;
         break;
 
+    case INDEX_op_qemu_ld_i32:
     case INDEX_op_qemu_ld32:
 #if TCG_TARGET_REG_BITS == 64
     case INDEX_op_qemu_ld32s:
@@ -80,6 +81,7 @@ static void after_gen_opc(const TCGPluginInterface *tpi, const TPIOpCode *tpi_op
         size = 4;
         break;
 
+    case INDEX_op_qemu_ld_i64:
     case INDEX_op_qemu_ld64:
         size = 8;
         break;

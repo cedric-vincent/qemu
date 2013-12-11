@@ -148,6 +148,7 @@ static void after_gen_opc(const TCGPluginInterface *tpi, const TPIOpCode *tpi_op
         MEMACCESS('r', 2);
         break;
 
+    case INDEX_op_qemu_ld_i32:
     case INDEX_op_qemu_ld32:
 #if TCG_TARGET_REG_BITS == 64
     case INDEX_op_qemu_ld32s:
@@ -156,6 +157,7 @@ static void after_gen_opc(const TCGPluginInterface *tpi, const TPIOpCode *tpi_op
         MEMACCESS('r', 4);
         break;
 
+    case INDEX_op_qemu_ld_i64:
     case INDEX_op_qemu_ld64:
         MEMACCESS('r', 8);
         break;
@@ -168,10 +170,12 @@ static void after_gen_opc(const TCGPluginInterface *tpi, const TPIOpCode *tpi_op
         MEMACCESS('w', 2);
         break;
 
+    case INDEX_op_qemu_st_i32:
     case INDEX_op_qemu_st32:
         MEMACCESS('w', 4);
         break;
 
+    case INDEX_op_qemu_st_i64:
     case INDEX_op_qemu_st64:
         MEMACCESS('w', 8);
         break;
